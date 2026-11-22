@@ -4,7 +4,7 @@ export interface CodeArtsCredentials {
     /** Present only for temporary STS credentials. */
     securityToken?: string;
 }
-export type CredentialSource = "env" | "profile" | "none";
+export type CredentialSource = "env" | "profile" | "web" | "none";
 export interface ResolvedCredentials {
     credentials: CodeArtsCredentials | null;
     source: CredentialSource;

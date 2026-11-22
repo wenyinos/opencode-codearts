@@ -9,17 +9,21 @@ set -euo pipefail
 
 case "$(uname -s)" in
   Linux)
+    systemctl --user disable --now opencode-codearts-signin.timer 2>/dev/null || true
     systemctl --user disable --now opencode-codearts 2>/dev/null || true
-    UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/opencode-codearts.service"
-    rm -f "$UNIT"
+    UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    rm -f "$UNIT_DIR/opencode-codearts.service" \
+          "$UNIT_DIR/opencode-codearts-signin.service" \
+          "$UNIT_DIR/opencode-codearts-signin.timer"
     systemctl --user daemon-reload 2>/dev/null || true
-    echo "removed: $UNIT"
+    echo "removed proxy service and daily check-in timer"
     ;;
   Darwin)
+    launchctl bootout "gui/$(id -u)/com.opencode-codearts.signin" 2>/dev/null || true
     launchctl bootout "gui/$(id -u)/com.opencode-codearts.proxy" 2>/dev/null || true
-    PLIST="$HOME/Library/LaunchAgents/com.opencode-codearts.proxy.plist"
-    rm -f "$PLIST"
-    echo "removed: $PLIST"
+    rm -f "$HOME/Library/LaunchAgents/com.opencode-codearts.proxy.plist" \
+          "$HOME/Library/LaunchAgents/com.opencode-codearts.signin.plist"
+    echo "removed proxy agent and daily check-in agent"
     ;;
   *)
     echo "unsupported platform: $(uname -s)" >&2

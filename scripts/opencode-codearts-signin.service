@@ -1,0 +1,23 @@
+# systemd user service: one daily CodeArts check-in attempt.
+#
+# Triggered by opencode-codearts-signin.timer. It reads the browser cookie from
+# ~/.config/opencode/opencode-codearts/web-cookie.txt (or
+# CODEARTS_WEB_COOKIE_FILE) and any saved web login token.
+#
+# Manual run:
+#   systemctl --user start opencode-codearts-signin.service
+#   journalctl --user -u opencode-codearts-signin -n 50 --no-pager
+
+[Unit]
+Description=CodeArts daily check-in
+After=network-online.target
+
+[Service]
+Type=oneshot
+# >>> EDIT THESE to your install location >>>
+WorkingDirectory=%h/OpenCodePlugins/opencode-codearts
+ExecStart=/usr/bin/env node %h/OpenCodePlugins/opencode-codearts/dist/signin-cli.js
+# <<< EDIT <<<
+
+Environment=CODEARTS_WEB_COOKIE_FILE=%h/.config/opencode/opencode-codearts/web-cookie.txt
+TimeoutStartSec=60

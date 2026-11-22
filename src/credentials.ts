@@ -11,6 +11,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { AK_ENV, SECURITY_TOKEN_ENV, SK_ENV } from "./config.js"
+import { isWebCredentialExpired, loadWebAuth } from "./web-auth.js"
 
 export interface CodeArtsCredentials {
   ak: string
@@ -19,7 +20,7 @@ export interface CodeArtsCredentials {
   securityToken?: string
 }
 
-export type CredentialSource = "env" | "profile" | "none"
+export type CredentialSource = "env" | "profile" | "web" | "none"
 
 export interface ResolvedCredentials {
   credentials: CodeArtsCredentials | null
@@ -161,6 +162,20 @@ export function resolveCredentials(env: NodeJS.ProcessEnv = process.env): Resolv
         sourceFile = file
       }
       if (ak && sk) break
+    }
+  }
+
+  // Web login fallback: only when the AK/SK pair is absent from the process
+  // environment and the shell profile. A web login that has expired is not
+  // used; run `npm run login` (or GET /login) to refresh it.
+  if (!ak || !sk) {
+    const state = loadWebAuth()
+    if (state && !isWebCredentialExpired(state.credential)) {
+      ak = state.credential.access_key_id
+      sk = state.credential.secret_access_key
+      securityToken = state.credential.security_token || securityToken
+      source = "web"
+      sourceFile = undefined
     }
   }
 

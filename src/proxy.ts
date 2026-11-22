@@ -56,7 +56,14 @@ import {
 } from "./models.js"
 import { describeNetworkError } from "./network-error.js"
 import { normalizeOpenAIChatBody } from "./normalize.js"
+import { claimDailyBenefit, readWebCookie } from "./signin.js"
 import { signRequestHuawei } from "./signing.js"
+import {
+  clearWebAuth,
+  currentWebCredential,
+  startWebLogin,
+  webAuthStatus,
+} from "./web-auth.js"
 import { usageFromStatistics } from "./usage.js"
 import { applyVisionRouting } from "./vision-routing.js"
 
@@ -188,6 +195,11 @@ export class CodeArtsProxy {
 
   async start(): Promise<void> {
     installDirectNetworkPolicy(this.env)
+    // If there is no usable env/profile AK/SK, renew an expired web login in
+    // the background so it stays a usable fallback for model requests.
+    if (!resolveCredentials(this.env).credentials) {
+      void currentWebCredential().catch(() => {})
+    }
     const status = credentialStatus(this.env)
     if (status.configured) {
       log.info(`CodeArts credentials loaded (${status.akPreview})`)
@@ -276,15 +288,40 @@ export class CodeArtsProxy {
       return this.modelInfo(res, id)
     }
     if (pathname === "/usage") return this.usage(res)
-    if (pathname === "/login" || pathname === "/logout") {
-      return this.json(res, 410, {
-        error: {
-          message:
-            "CodeArts does not use a web login in this plugin. Set CODEARTS_CLI_AK and CODEARTS_CLI_SK and restart opencode.",
-          code: "codearts_env_credentials_required",
-          doc: CREDENTIALS_DOC,
-        },
+    if (pathname === "/login") {
+      try {
+        const started = await startWebLogin({ open: false })
+        return this.json(res, 200, {
+          login_url: started.loginUrl,
+          instructions:
+            "Open login_url in a browser. The proxy saves the credential when the callback completes; poll GET /status.",
+          status_url: "/status",
+        })
+      } catch (err) {
+        return this.json(res, 502, {
+          error: {
+            message: `Could not start the CodeArts web login: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            type: "login_error",
+          },
+        })
+      }
+    }
+    if (pathname === "/logout") {
+      clearWebAuth()
+      return this.json(res, 200, { ok: true })
+    }
+    if (pathname === "/signin") {
+      const credential = await currentWebCredential()
+      const result = await claimDailyBenefit({
+        cookie: readWebCookie(this.env),
+        credential,
+        fetcher: this.fetcher,
+        env: this.env,
       })
+      const status = result.ok ? 200 : result.authExpired ? 401 : 502
+      return this.json(res, status, result)
     }
     if (pathname === "/anthropic/v1/messages" && req.method === "POST") {
       return this.forwardAnthropic(req, res)
@@ -313,6 +350,8 @@ export class CodeArtsProxy {
       anthropic_base_url: `http://${this.hostname}:${this.port}/anthropic`,
       upstream: this.upstreamBase,
       models: Object.keys(cached).length,
+      web_auth: webAuthStatus(),
+      web_cookie: Boolean(readWebCookie(this.env)),
       doc: CREDENTIALS_DOC,
     })
   }

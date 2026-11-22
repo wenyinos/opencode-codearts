@@ -5,8 +5,8 @@
 **目标**
 
 1. 用本地代理把华为云码道（CodeArts）模型接入 opencode 与 Claude Code。
-2. 鉴权只用 `CODEARTS_CLI_AK` / `CODEARTS_CLI_SK`（与官方 CLI 同一套），
-   **不做网页 OAuth**，不依赖 magpie。
+2. 鉴权优先 `CODEARTS_CLI_AK` / `CODEARTS_CLI_SK`（与官方 CLI 同一套）；可选 TUI 网页登录
+   作为模型兜底，签到使用浏览器 Cookie。不依赖 magpie。
 3. 结构和 `opencode-deveco` 对齐：TypeScript + `src/` → `dist/` + 本地代理；
    同时提供 OpenAI 与 Anthropic 两套协议。
 4. 代理默认 **17228**（deveco 是 17128），两者可并存。
@@ -14,8 +14,9 @@
 
 **非目标**
 
-- 不实现浏览器登录、PKCE/DPoP、token 刷新——这些属于 OAuth 路径，AK/SK 路径不需要。
-- 不保存 AK/SK 到磁盘。
+- 不把 TUI OAuth 当作签到凭据——它不返回网页 user token，签到仍用浏览器 Cookie。
+- 不保存 AK/SK 到磁盘；可选的 web 登录凭据保存在 `web-auth.json`（0600）。
+- 自动签到默认不启用，必须显式 `npm run signin:enable`。
 - 不实现 DevEco 专有的 `exitSessionQueue`、真实姓名/区域门禁。
 
 ## 二、总体架构
@@ -48,7 +49,7 @@ https://snap-access.cn-north-4.myhuaweicloud.com/api/v2/chat/completions
 V2 的 `setup` 会先检查 `ctx.provider.transform` 是否存在；V1 用 V1 形状的 ctx 调用
 `setup` 时直接返回，由 `server` 负责。
 
-## 三、AK/SK 解析
+## 三、认证：AK/SK 优先 + 网页登录兜底
 
 优先级：
 
@@ -60,13 +61,23 @@ V2 的 `setup` 会先检查 `ctx.provider.transform` 是否存在；V1 用 V1 �
    - fish：`.config/fish/config.fish`
    - sh/dash：`.profile`
    - 每个列表最后都追加其他常见文件，避免 service 与终端 shell 不一致时漏掉变量。
-4. `CODEARTS_DISABLE_PROFILE=1` 可关闭第 2、3 步（测试使用）。
+4. CodeArts TUI 网页登录保存的临时 AK/SK/ST
+   （`~/.config/opencode/opencode-codearts/web-auth.json`，0600）。
+5. `CODEARTS_DISABLE_PROFILE=1` 可关闭第 2、3 步（测试使用）；不影响第 4 步。
 
 profile **只读取不执行**，只匹配 `export KEY=value`、`KEY=value`、`set -gx KEY value`。
 可选 `CODEARTS_CLI_SECURITY_TOKEN` 用于临时 STS 凭据；永久 AK/SK 不需要。
 
+网页登录（`src/oauth.ts` + `web-auth.ts`）镜像 CodeArts CLI 的 TUI 流程：
+`CodeArts_Tui` + PKCE + DPoP → 本地回调 → STS `/v1/oauth2/tokens`，保存完整凭据与
+refresh token，可自动续期。AK/SK 存在时**永远优先**使用 AK/SK，因为网页登录态容易过期。
+
+> 实测 TUI OAuth 只返回临时 AK/SK/ST + refresh token，**不返回网页 user token**；
+> 因此它只能作为模型 API 的兜底，每日签到仍需要浏览器 Cookie（见“每日签到”）。
+
 这样设计的原因：代理可能由 systemd 或 opencode 后台 service 启动，进程环境里没有用户
-终端导出的变量。profile 兜底让变量“手动设置一次”即可长期生效。
+终端导出的变量。profile 兜底让变量“手动设置一次”即可长期生效；网页登录则给没有
+AK/SK 的机器一个可用的模型通道。
 
 ## 四、请求签名
 
@@ -102,7 +113,10 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 | `GET /models`、`/v1/models`、`/api/v2/models` | 实时拉 `/v1/model/builtin`，失败回退快照/静态目录；每个模型带全部上游字段 |
 | `GET /models/<id>` 等 | 单个模型的完整记录（含 `upstream` 原始对象） |
 | `GET /usage` | 签名 GET `/snap-manager/v1/statistics/plugin`，映射为积分窗口 |
-| `GET /status` | `{ configured, ak, source, source_file, missing, base_url, anthropic_base_url, models }` |
+| `GET /login` | 启动 TUI 网页登录，返回 `login_url`；回调后保存 `web-auth.json` |
+| `GET /logout` | 清除网页登录态（不影响 AK/SK） |
+| `GET /signin` | 每日签到（浏览器 Cookie / web user token） |
+| `GET /status` | `{ configured, ak, source, source_file, missing, base_url, anthropic_base_url, models, web_auth, web_cookie }` |
 | `GET /health` | `{ ok: true }` |
 | `GET /login`、`/logout` | `410` + “请设置 CODEARTS_CLI_AK/SK”说明（明确没有网页登录） |
 
@@ -115,6 +129,54 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 
 端口冲突：如果目标端口已被**本代理**的另一个实例占用（systemd 服务 + 手动 `start:proxy`），
 `startProxy()` 会探测 `/status` 的 `provider` 字段并直接复用，不再让插件加载失败。
+
+### 每日签到
+
+`src/signin.ts` 走网页福利活动服务（axios baseURL 为 `/chat`）：
+
+```
+GET  https://devcloud.cn-north-4.huaweicloud.com
+     /chat/PromptCenterService/v1/ops/delivery?channel=WEB
+POST https://devcloud.cn-north-4.huaweicloud.com
+     /chat/PromptCenterService/v1/ops/claim
+body: { campaignId, idempotentKey: "daily-<id>-<YYYYMMDD>", channel: "WEB" }
+```
+
+当前两个每日签到活动（都是限时活动）：
+
+| campaignId | 标题 | 奖励 |
+| ---: | --- | ---: |
+| 34 | 每日签到领100积分 | 100 CREDIT |
+| 40 | Skill创新赛每日签到礼 | 1000 CREDIT |
+
+Skill 创新赛介绍：<https://developer.huaweicloud.com/competition/information/1300000350/html1>。
+默认按标题包含「每日签到」匹配，可用 `CODEARTS_SIGNIN_TITLES` 或
+`CODEARTS_SIGNIN_CAMPAIGNS=34,40` 覆盖。
+
+鉴权必须是网页登录态：浏览器 Cookie（含 `devclouddevuibjtcftk`），或 web user token
+（`x-auth-token`）。AK/SK 与 TUI OAuth token 都不能直接领取；`benefit/claim` 与
+`opengw` 的 AK/SK 路径都返回 `4000 invalid channel, group not found`。
+
+Cookie 来源：`CODEARTS_WEB_COOKIE` → `CODEARTS_WEB_COOKIE_FILE` →
+`~/.config/opencode/opencode-codearts/web-cookie.txt`（0600）。支持浏览器扩展 JSON、
+Playwright `{cookies}`、Netscape `cookies.txt`、完整 cURL（自动提取 `Cookie:`）或裸 Cookie。
+
+结果处理：
+
+- `code 0/200`：领取成功；
+- `CONFIRMED` / `CLAIMED` / `40001`（尚未刷新）：今日已领取，按成功处理；
+- `endedCampaigns` 或「过期/结束/未开始」：活动已结束，记录 `expired` 并跳过；
+- `401`/`403`/`HW-AJAX-REDIRECT`：登录态失效，需要重新导出 Cookie；
+- 两个活动都下线、列表为空：输出“未找到进行中的每日签到活动”，按完成处理；
+- 其他错误：非 0 退出，交给定时器日志。
+
+**自动签到是可选功能**：`install-autostart.sh` 只安装代理，不会启用签到 timer。
+用户先完成 `npm run login` 与 `npm run signin:import-cookie`（支持 Cookie-Editor/
+EditThisCookie JSON、剪贴板、cURL、Cookie 头），再用 `npm run signin:enable` 显式启用；
+`npm run signin:disable` 关闭。`signin:enable` 会检查 `web-auth.json` 和
+`web-cookie.txt`，然后安装 `opencode-codearts-signin.timer`（每天 08:00，`Persistent=true`）。
+
+`src/signin-cli.ts`（`npm run signin`）用于手动测试。
 
 ### 并发闸门（对齐 deveco）
 
@@ -220,7 +282,12 @@ CodeArts 每个账号最多 3 个并发会话，第 4 个返回 400 `TM.00001041
 - `scripts/install-autostart.sh` / `uninstall-autostart.sh`：Linux/macOS 一键安装/卸载自启动。
 - `scripts/install-autostart-windows.ps1` / `uninstall-autostart-windows.ps1`：
   Windows 启动文件夹快捷方式。
-- 安装脚本会把当前 `$SHELL` 写入服务环境，保证 AK/SK 的 shell profile 兜底可用。
+- `scripts/opencode-codearts-signin.service` / `.timer`：每日 08:00 签到模板（Linux）。
+- `scripts/com.opencode-codearts.signin.plist`：每日 08:00 签到模板（macOS）。
+- `scripts/enable-signin-timer.sh` / `disable-signin-timer.sh`：签到 timer 的显式启用/关闭；
+  启用前检查 web 登录和 Cookie 文件。
+- 安装脚本会把当前 `$SHELL` 写入服务环境，保证 AK/SK 的 shell profile 兜底可用；
+  **不会**自动启用签到 timer。
 - `src/print-provider.ts`（`npm run print-provider`）：输出 opencode 的 provider 配置，
   供“独立代理、不挂插件列表”的用法。
 
@@ -232,7 +299,13 @@ src/
 ├── plugin.ts             V1 config hook + V2 setup + 代理生命周期
 ├── proxy.ts              本地 HTTP 代理（OpenAI/Anthropic、闸门、签名、模型、用量）
 ├── config.ts             provider/端点/端口/静态目录/闸门参数/日志
-├── credentials.ts        env → CODEARTS_ENV_FILE → shell profile 解析
+├── credentials.ts        env → CODEARTS_ENV_FILE → shell profile → web login 解析
+├── oauth.ts              TUI OAuth（CodeArts_Tui + PKCE + DPoP）
+├── web-auth.ts           网页登录持久化、刷新、状态
+├── signin.ts             每日签到（Cookie / web user token）
+├── login-cli.ts          npm run login
+├── signin-cli.ts         npm run signin
+├── import-cookie.ts      npm run signin:import-cookie
 ├── gate.ts               并发闸门（上限 + 有界队列 + 冷却）
 ├── signing.ts            SDK-HMAC-SHA256（WebCrypto）
 ├── normalize.ts          OpenAI 请求体归一化
@@ -246,10 +319,13 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（99 项）
+└── *.test.ts             vitest（117 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
+├── opencode-codearts-signin.service / .timer
+├── com.opencode-codearts.signin.plist
+├── enable-signin-timer.sh / disable-signin-timer.sh
 ├── install-autostart.sh / uninstall-autostart.sh
 ├── install-autostart-windows.ps1 / uninstall-autostart-windows.ps1
 └── start-windows.ps1 / stop-windows.ps1
@@ -260,7 +336,7 @@ scripts/
 | 维度 | opencode-deveco | opencode-codearts |
 | --- | --- | --- |
 | 运行形态 | 本地代理 + 可选插件 | 本地代理 + 可选插件（独立代理为主） |
-| 鉴权 | 浏览器登录 + jwtToken 文件 + Bearer | `CODEARTS_CLI_AK/SK` 环境变量，无登录 |
+| 鉴权 | 浏览器登录 + jwtToken 文件 + Bearer | AK/SK 优先；可选 TUI web 登录兜底 |
 | 请求 | 注入 Bearer，无签名 | SDK-HMAC-SHA256 签名 |
 | 代理端口 | 17128 | **17228** |
 | 并发闸门 | `ConcurrencyGate`，默认 1 | `ConcurrencyGate`，默认 **3**（账号上限） |
@@ -272,7 +348,7 @@ scripts/
 | 模型目录/快照 | 有 | 有 |
 | 用量 | magpie hook | `GET /usage` |
 | 守护/自启脚本 | systemd/launchd/Windows | systemd/launchd/Windows |
-| 凭据存储 | jwt.json | 不落盘 |
+| 凭据存储 | jwt.json | AK/SK 不落盘；可选 web 登录 `web-auth.json`（0600） |
 | 依赖 | undici（代理环境） | 无运行时依赖（WebCrypto + 全局 fetch） |
 
 **有意保留的差异**
@@ -283,7 +359,7 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，99 项）：
+`npm test`（vitest，117 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。
@@ -293,8 +369,12 @@ scripts/
 - 归一化：developer role、max_completion_tokens、tool_choice、reasoning_effort。
 - 视觉回落：新图改路由、历史图剥离、视觉/未知模型不处理。
 - Anthropic：请求/响应转换、thinking、tool calls、流式事件、紧凑 `data:` 解析。
-- 代理：`/status`、缺少凭据 401、`/login` 410、签名转发、SSE 透传、实时模型、`/models/<id>`、
-  用量、并发串行化、队列满 429、`TM.00001041` → 429、上下文超长提示、视觉回落、Anthropic。
+- 代理：`/status`、缺少凭据 401、web 登录状态/logout、签名转发、SSE 透传、实时模型、
+  `/models/<id>`、用量、并发串行化、队列满 429、`TM.00001041` → 429、上下文超长提示、
+  视觉回落、Anthropic。
+- 签到：Cookie JSON/Netscape/cURL/裸头解析、`devclouddevuibjtcftk` 优先、两个每日签到活动、
+  `ELIGIBLE` 领取、`CONFIRMED`/`40001` 已领取、`endedCampaigns`/过期跳过、无活动按完成、
+  `HW-AJAX-REDIRECT` 失效、缺少 Cookie 时拒绝请求、web user token 头。
 - 插件：V1 config hook 注入、用户 provider 保留、快照优先、端口跟随。
 - 网络错误：DNS、连接拒绝、超时、TLS、连接中断的提示与 cause 链。
 - supervisor：崩溃重启与退避。
@@ -309,4 +389,12 @@ scripts/
 - `GET /usage` → 体验版积分窗口；
 - Anthropic 非流/流式/thinking → 转换正常；
 - `opencode models --standalone` → `codearts/<model>` 出现；
-- 仅 provider 配置（无 plugin 数组）→ `codearts/<model>` 出现。
+- 仅 provider 配置（无 plugin 数组）→ `codearts/<model>` 出现；
+- TUI 网页登录（`CodeArts_Tui` + PKCE + DPoP）→ 保存 `web-auth.json`；
+- 清空 AK/SK/profile 后，`/status` 显示 `source: "web"`，`/models` 实时列表正常；
+- 签到接口：TUI OAuth token 不含 web user token，实际领取需要浏览器 Cookie；
+  `npm run signin:import-cookie` 直接导入 Cookie-Editor JSON（43 个 Cookie，识别到 cftk），
+  `npm run signin` 识别到两个活动（34 每日签到领100积分、40 Skill创新赛每日签到礼）
+  并返回“今日已领取”。
+- 自动签到 opt-in：`signin:disable` 移除 timer；`signin:enable` 检查 web 登录 + Cookie 后
+  重新安装/启用 `opencode-codearts-signin.timer`（每天 08:00）。

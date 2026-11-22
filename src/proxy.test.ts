@@ -112,12 +112,18 @@ describe("CodeArtsProxy", () => {
     expect(body.error.code).toBe("codearts_missing_credentials")
   })
 
-  it("has no web login", async () => {
+  it("reports web login state and clears it on logout", async () => {
     const proxy = await startProxy({ env: ENV })
-    const response = await fetch(`${baseOf(proxy)}/login`, { redirect: "manual" })
-    expect(response.status).toBe(410)
-    const body = (await response.json()) as { error: { code: string } }
-    expect(body.error.code).toBe("codearts_env_credentials_required")
+    const status = (await (await fetch(`${baseOf(proxy)}/status`)).json()) as {
+      web_auth: { available: boolean; source: string }
+      web_cookie: boolean
+    }
+    expect(status.web_auth).toMatchObject({ available: false, source: "none" })
+    expect(status.web_cookie).toBe(false)
+
+    const logout = await fetch(`${baseOf(proxy)}/logout`)
+    expect(logout.status).toBe(200)
+    expect(await logout.json()).toEqual({ ok: true })
   })
 
   it("forwards a chat request with a valid signature", async () => {
