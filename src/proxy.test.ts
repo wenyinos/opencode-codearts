@@ -176,11 +176,16 @@ describe("CodeArtsProxy", () => {
     })
     const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        "x-session-id": "sess_test_123",
+      },
       body: JSON.stringify({
         model: "glm-5.3-flash",
         messages: [{ role: "user", content: "hi" }],
         stream: false,
+        max_completion_tokens: 999999,
       }),
     })
 
@@ -192,7 +197,49 @@ describe("CodeArtsProxy", () => {
     )
     expect(captured[0].headers["x-sdk-date"]).toBeTruthy()
     expect(captured[0].headers["x-security-token"]).toBeUndefined()
+    expect(captured[0].headers["x-ot-session-id"]).toBe("sess_test_123")
+    expect(captured[0].headers["user-session-id"]).toBe("sess_test_123")
+    const forwarded = JSON.parse(captured[0].body) as {
+      max_tokens?: number
+      max_completion_tokens?: number
+    }
+    expect(forwarded.max_completion_tokens).toBeUndefined()
+    expect(forwarded.max_tokens).toBe(65536)
     expect(captured[0].body).toContain("glm-5.3-flash")
+  })
+
+  it("uses prompt_cache_key as the upstream session when no header is present", async () => {
+    const captured: Array<{ headers: http.IncomingHttpHeaders }> = []
+    const upstream = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain */
+      }
+      captured.push({ headers: req.headers })
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ id: "mock", object: "chat.completion", choices: [] }))
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "glm-5.3-flash",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+        prompt_cache_key: "sess_cache_456",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(captured).toHaveLength(1)
+    expect(captured[0].headers["x-ot-session-id"]).toBe("sess_cache_456")
+    expect(captured[0].headers["user-session-id"]).toBe("sess_cache_456")
   })
 
   it("serialises chat turns beyond the concurrency limit", async () => {
@@ -497,6 +544,167 @@ describe("CodeArtsProxy", () => {
     expect(text).toContain('"A"')
     expect(text).toContain('"B"')
     expect(text).toContain("[DONE]")
+  })
+
+  it("synthesizes finish_reason when the upstream omits it", async () => {
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write('data:{"choices":[{"delta":{"content":"A"}}]}\n\n')
+      res.end("data:[DONE]\n\n")
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ model: "kimi-k3.1-pro", messages: [], stream: true }),
+    })
+    const text = await response.text()
+    const events = text.split("\n\n").filter(Boolean)
+    const payloads = events
+      .map((event) => (event.startsWith("data:") ? event.slice(5).trim() : ""))
+      .filter((payload) => payload && payload !== "[DONE]")
+    for (const payload of payloads) {
+      expect(() => JSON.parse(payload)).not.toThrow()
+    }
+    expect(payloads.some((payload) => payload.includes('"finish_reason":"stop"'))).toBe(true)
+  })
+
+  it("promotes a reasoning-only stream into content and strips message_end", async () => {
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write(
+        'data:{"choices":[{"delta":{"role":"assistant","content":"","reasoning_content":"主人"}}]}\n\n',
+      )
+      res.write('data:{"choices":[{"delta":{"reasoning_content":"你好"}}]}\n\n')
+      res.write('data:{"choices":[{"delta":{"reasoning_content":"<|message_end|>"}}]}\n\n')
+      res.write('data:{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n\n')
+      res.end("data:[DONE]\n\n")
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ model: "openpangu-2.1-pro", messages: [], stream: true }),
+    })
+    const text = await response.text()
+    const events = text.split("\n\n").filter(Boolean)
+    for (const event of events) {
+      const payload = event.startsWith("data:") ? event.slice(5).trim() : ""
+      if (!payload || payload === "[DONE]") continue
+      expect(() => JSON.parse(payload)).not.toThrow()
+    }
+    expect(text).toContain('"content":"主人你好"')
+    expect(text).not.toContain("<|message_end|>")
+    expect(text).toContain('"finish_reason":"stop"')
+  })
+
+  it("strips message_end from a normal streamed answer", async () => {
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write('data:{"choices":[{"delta":{"content":"OK<|message_end|>"}}]}\n\n')
+      res.write('data:{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n\n')
+      res.end("data:[DONE]\n\n")
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ model: "openpangu-2.1-pro", messages: [], stream: true }),
+    })
+    const text = await response.text()
+    expect(text).toContain('"content":"OK"')
+    expect(text).not.toContain("<|message_end|>")
+    expect(text).not.toContain('"content":"OK<|message_end|>"')
+  })
+
+  it("does not promote reasoning when the stream ends in a tool call", async () => {
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write('data:{"choices":[{"delta":{"reasoning_content":"need a tool"}}]}\n\n')
+      res.write(
+        'data:{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"x","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      )
+      res.end("data:[DONE]\n\n")
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ model: "openpangu-2.1-pro", messages: [], stream: true }),
+    })
+    const text = await response.text()
+    expect(text).not.toContain('"content":"need a tool"')
+    expect(text).toContain('"tool_calls"')
+  })
+
+  it("promotes a reasoning-only non-stream reply into content", async () => {
+    const upstream = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain */
+      }
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          id: "mock",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "",
+                reasoning_content: "你好<|message_end|>",
+              },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+      )
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "openpangu-2.1-pro", messages: [], stream: false }),
+    })
+    const body = (await response.json()) as {
+      choices: Array<{
+        message: { content: string; reasoning_content: string }
+      }>
+    }
+    expect(body.choices[0].message.content).toBe("你好")
+    expect(body.choices[0].message.reasoning_content).toBe("你好")
+    expect(JSON.stringify(body)).not.toContain("<|message_end|>")
   })
 
   it("serves the live model list when the signed fetch succeeds", async () => {

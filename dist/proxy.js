@@ -60,6 +60,67 @@ function contextLimitHint(model) {
         ? `CodeArts rejected the prompt as too long (model context: ${limit.toLocaleString("en-US")} tokens). Reduce the prompt and retry.`
         : "CodeArts rejected the prompt as too long. Reduce the prompt and retry.";
 }
+const MESSAGE_END = "<|message_end|>";
+/** Remove CodeArts' raw end-of-message control token from model output. */
+function stripMessageEnd(text) {
+    return text.split(MESSAGE_END).join("");
+}
+/**
+ * Some CodeArts models (notably openpangu-2.1-pro) occasionally put the final
+ * answer in reasoning_content and leave content empty. Promote that text so
+ * OpenAI clients still receive a reply instead of an empty message.
+ */
+function normalizeChatCompletionBody(text) {
+    try {
+        const json = JSON.parse(text);
+        const choices = json.choices;
+        if (Array.isArray(choices)) {
+            for (const choice of choices) {
+                if (!choice || typeof choice !== "object")
+                    continue;
+                const record = choice;
+                const message = record.message;
+                if (!message || typeof message !== "object")
+                    continue;
+                const msg = message;
+                if (typeof msg.content === "string") {
+                    msg.content = stripMessageEnd(msg.content);
+                }
+                if (typeof msg.reasoning_content === "string") {
+                    msg.reasoning_content = stripMessageEnd(msg.reasoning_content);
+                }
+                const content = typeof msg.content === "string" ? msg.content : "";
+                const reasoning = typeof msg.reasoning_content === "string" ? msg.reasoning_content : "";
+                const tools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+                if (!content.trim() &&
+                    reasoning.trim() &&
+                    !tools &&
+                    record.finish_reason === "stop") {
+                    msg.content = reasoning;
+                }
+            }
+        }
+        return JSON.stringify(json);
+    }
+    catch {
+        return text;
+    }
+}
+/** Validate a client-supplied conversation/session id before using it upstream. */
+function sanitizeSessionId(value) {
+    if (typeof value !== "string")
+        return "";
+    const clean = value.trim();
+    return /^[A-Za-z0-9._:-]{1,128}$/.test(clean) ? clean : "";
+}
+/** Map the client's conversation id to the upstream session headers. */
+function clientSessionId(req) {
+    const raw = req.headers["x-session-id"] ??
+        req.headers["x-ot-session-id"] ??
+        req.headers["user-session-id"];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return sanitizeSessionId(value);
+}
 /**
  * Apply CodeArts-side request rewrites and the vision fallback. Keeps the
  * original bytes on a malformed body and reports the outbound model id.
@@ -68,7 +129,7 @@ function prepareOpenAIBody(input) {
     try {
         const parsed = JSON.parse(new TextDecoder().decode(input));
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            return { body: input, model: "" };
+            return { body: input, model: "", sessionId: "" };
         }
         let current = parsed;
         let changed = false;
@@ -82,13 +143,23 @@ function prepareOpenAIBody(input) {
             current = routing.body;
             changed = true;
         }
+        const model = typeof current.model === "string" ? current.model : "";
+        const persisted = loadPersistedModels();
+        const info = persisted?.[model] ?? CATALOG[model];
+        const cap = info?.limit?.output ?? CATALOG[model]?.limit?.output;
+        if (typeof current.max_tokens === "number" && cap && current.max_tokens > cap) {
+            current = { ...current, max_tokens: cap };
+            changed = true;
+            log.debug("max_tokens capped to the model output limit", { model, cap });
+        }
         return {
             body: changed ? new TextEncoder().encode(JSON.stringify(current)) : input,
-            model: typeof current.model === "string" ? current.model : "",
+            model,
+            sessionId: sanitizeSessionId(current.prompt_cache_key),
         };
     }
     catch {
-        return { body: input, model: "" };
+        return { body: input, model: "", sessionId: "" };
     }
 }
 /**
@@ -430,6 +501,7 @@ export class CodeArtsProxy {
         try {
             armIdle();
             // Sign after admission: a long queue wait must not age the signature.
+            const sessionId = clientSessionId(req) || prepared.sessionId;
             const signed = await signRequestHuawei({
                 ak: credentials.ak,
                 sk: credentials.sk,
@@ -437,7 +509,12 @@ export class CodeArtsProxy {
                 method: "POST",
                 url: target,
                 body,
-                extraHeaders: { "content-type": "application/json" },
+                extraHeaders: {
+                    "content-type": "application/json",
+                    ...(sessionId
+                        ? { "x-ot-session-id": sessionId, "user-session-id": sessionId }
+                        : {}),
+                },
             });
             const headers = new Headers(signed.headers);
             const accept = req.headers.accept;
@@ -498,7 +575,122 @@ export class CodeArtsProxy {
                 res.end();
                 return;
             }
+            const contentType = upstream.headers.get("content-type") ?? "";
+            if (!contentType.includes("text/event-stream")) {
+                try {
+                    res.end(normalizeChatCompletionBody(await upstream.text()));
+                }
+                catch (err) {
+                    if (!clientGone.signal.aborted) {
+                        log.warn("chat response ended early", {
+                            error: err instanceof Error ? err.message : String(err),
+                        });
+                    }
+                    if (!res.writableEnded)
+                        res.end();
+                }
+                return;
+            }
+            const state = {
+                base: null,
+                content: "",
+                reasoning: "",
+                toolCalls: false,
+                fallback: false,
+                sawFinish: false,
+            };
+            const shouldFallback = () => !state.fallback &&
+                !state.content.trim() &&
+                Boolean(state.reasoning.trim()) &&
+                !state.toolCalls;
+            const write = async (text) => {
+                if (res.writableEnded || res.destroyed)
+                    return;
+                if (!res.write(text)) {
+                    await new Promise((resolve) => {
+                        res.once("drain", resolve);
+                        res.once("close", resolve);
+                    });
+                }
+            };
+            const fallbackChunk = (finish) => {
+                const chunk = {
+                    ...(state.base ?? {}),
+                    choices: [
+                        {
+                            index: 0,
+                            delta: { content: state.reasoning },
+                            finish_reason: finish,
+                        },
+                    ],
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            };
+            const finishChunk = (reason) => {
+                const chunk = {
+                    ...(state.base ?? {}),
+                    choices: [{ index: 0, delta: {}, finish_reason: reason }],
+                };
+                return `data: ${JSON.stringify(chunk)}\n\n`;
+            };
+            const processData = async (line) => {
+                const payload = line.slice(5).trimStart();
+                if (payload.trim() === "[DONE]") {
+                    if (!state.sawFinish) {
+                        if (shouldFallback()) {
+                            await write(fallbackChunk(null));
+                            state.fallback = true;
+                        }
+                        await write(finishChunk(state.toolCalls ? "tool_calls" : "stop"));
+                        state.sawFinish = true;
+                    }
+                    await write(`${line}\n`);
+                    return;
+                }
+                let json;
+                try {
+                    json = JSON.parse(payload);
+                }
+                catch {
+                    await write(`${line}\n`);
+                    return;
+                }
+                state.base = json;
+                const choices = json.choices;
+                const choice = Array.isArray(choices) ? choices[0] : undefined;
+                if (choice && typeof choice === "object") {
+                    const record = choice;
+                    const delta = record.delta;
+                    if (delta && typeof delta === "object") {
+                        const d = delta;
+                        if (typeof d.reasoning_content === "string") {
+                            const cleaned = stripMessageEnd(d.reasoning_content);
+                            d.reasoning_content = cleaned;
+                            state.reasoning += cleaned;
+                        }
+                        if (typeof d.content === "string") {
+                            const cleaned = stripMessageEnd(d.content);
+                            d.content = cleaned;
+                            state.content += cleaned;
+                        }
+                        if (Array.isArray(d.tool_calls) && d.tool_calls.length > 0) {
+                            state.toolCalls = true;
+                        }
+                    }
+                    const finish = record.finish_reason;
+                    if (typeof finish === "string" && finish) {
+                        state.sawFinish = true;
+                        if (finish === "stop" && shouldFallback()) {
+                            await write(fallbackChunk(null));
+                            state.fallback = true;
+                        }
+                    }
+                }
+                await write(`data: ${JSON.stringify(json)}\n`);
+            };
             const reader = upstream.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
             try {
                 for (;;) {
                     const { done, value } = await reader.read();
@@ -509,12 +701,30 @@ export class CodeArtsProxy {
                         idle.abort();
                         break;
                     }
-                    if (!res.write(Buffer.from(value))) {
-                        await new Promise((resolve) => {
-                            res.once("drain", resolve);
-                            res.once("close", resolve);
-                        });
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop() ?? "";
+                    for (const line of lines) {
+                        if (line.startsWith("data:"))
+                            await processData(line);
+                        else
+                            await write(`${line}\n`);
                     }
+                }
+                buffer += decoder.decode();
+                if (buffer) {
+                    if (buffer.startsWith("data:"))
+                        await processData(buffer);
+                    else
+                        await write(buffer);
+                }
+                if (!state.sawFinish) {
+                    if (shouldFallback()) {
+                        await write(fallbackChunk(null));
+                        state.fallback = true;
+                    }
+                    await write(finishChunk(state.toolCalls ? "tool_calls" : "stop"));
+                    state.sawFinish = true;
                 }
             }
             catch (err) {
@@ -611,6 +821,7 @@ export class CodeArtsProxy {
         const signal = mergeAbortSignals(clientGone.signal, idle.signal);
         try {
             armIdle();
+            const sessionId = clientSessionId(req);
             const signed = await signRequestHuawei({
                 ak: credentials.ak,
                 sk: credentials.sk,
@@ -618,7 +829,12 @@ export class CodeArtsProxy {
                 method: "POST",
                 url: target,
                 body,
-                extraHeaders: { "content-type": "application/json" },
+                extraHeaders: {
+                    "content-type": "application/json",
+                    ...(sessionId
+                        ? { "x-ot-session-id": sessionId, "user-session-id": sessionId }
+                        : {}),
+                },
             });
             const headers = new Headers(signed.headers);
             headers.set("accept", isStream ? "text/event-stream" : "application/json");

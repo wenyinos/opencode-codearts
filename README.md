@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-118%20passing-success)
+![tests](https://img.shields.io/badge/tests-124%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -14,6 +14,11 @@
 - **凭据处理**：AK/SK 不落盘；可选 web 登录保存在 `web-auth.json`（0600），签到 Cookie 在 `web-cookie.txt`（0600）。
 - **每日签到（可选）**：默认不启用；导入浏览器 Cookie 后手动 `npm run signin:enable`。
 - **并发闸门**：对齐 `opencode-deveco`，最多 3 个并发会话，排队/429/冷却。
+- **会话复用**：ZCode 的 `x-session-id` 与 opencode 的 `prompt_cache_key` 会映射到上游
+  `x-ot-session-id` / `user-session-id`；同一会话切模型不会重复占用 3 个上游会话。
+- **响应兜底**：openpangu 把最终回答写进 `reasoning_content` 时自动回填正文；清理
+  `<|message_end|>`；上游缺 `finish_reason` 时补 `stop` / `tool_calls`。
+- **token 上限**：按模型声明的输出上限截断 `max_tokens`，避免 opencode 发 256000 被上游拒绝。
 
 ## 前置条件
 
@@ -369,6 +374,9 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 - 仍撞上上游 `TM.00001041`（其他 CLI/IDE 占用会话）时，改写为 **429**
   `codearts_concurrency_limit`；
 - `/status`、`/models`、`/usage` 不占并发槽位。
+- 同一会话复用：客户端传 `x-session-id`（ZCode）或请求体 `prompt_cache_key`（opencode）时，
+  代理会把它作为上游 `x-ot-session-id` / `user-session-id` 签名发送；同一会话内切换模型
+  只占一个上游会话，不会切 3 次就累计满 3 个。
 
 ### 上游错误归一化
 
@@ -376,6 +384,12 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 - 请求体：`developer` role → `system`；`max_completion_tokens` → `max_tokens`；
   `tool_choice` 对象形式 → 网关接受的枚举/窄化 tools；`reasoning_effort`
   归一化为 `low|high|max`。
+- `max_tokens` 按模型声明的输出上限截断（例如 kimi 的 256000 → 65536），避免上游
+  `InferHub.001001005.400`。
+- SSE 流缺少 `finish_reason` 时补 `stop` 或 `tool_calls`，避免 opencode 报
+  `stream ended without finish_reason` 并反复重试。
+- 最终回答只出现在 `reasoning_content` 时回填到 `content`；同时清理
+  `<|message_end|>` 控制符。
 
 ## 环境变量
 
@@ -403,7 +417,9 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | --- | --- |
 | `401 codearts_missing_credentials` | 设置 `CODEARTS_CLI_AK/SK`，或确认 shell profile 中有这两个变量 |
 | `429 codearts_queue_full` | 并发/排队已满；稍后重试，或调大 `CODEARTS_MAX_QUEUE` |
-| `429 codearts_concurrency_limit` | 账号的 3 个会话被其他客户端占用；关闭部分会话后重试 |
+| `429 codearts_concurrency_limit` | 账号的 3 个会话被其他客户端占用；确认客户端带 `x-session-id` / `prompt_cache_key` 以复用会话；仍 429 时关闭其他会话后重试 |
+| `opencode` 报 `stream ended without finish_reason` | 1.1.0 重发版已在上游缺 finish 时补 `stop` / `tool_calls`；更新代理并重启 |
+| `InferHub.001001005.400` | `max_tokens` 超出模型输出上限；1.1.0 重发版会按模型 `limit.output` 自动截断 |
 | `400 codearts_context_limit` | 提示词超过模型上下文，缩短后重试 |
 | 端口 17228 被占用 | 若占用者也是本代理会直接复用；否则用 `CODEARTS_PROXY_PORT` 换端口 |
 | 模型列表为空 | 先 `curl 127.0.0.1:17228/models`；无实时列表时用静态 12 个模型兜底 |
@@ -430,6 +446,12 @@ with Huawei's SDK-HMAC-SHA256, and serves both OpenAI (`/v2/chat/completions`) a
 Anthropic (`/anthropic/v1/messages`) APIs on `127.0.0.1:17228` (override with
 `CODEARTS_PROXY_PORT`). Connections are direct; the proxy never reads OS proxy settings
 and pins `NO_PROXY=*` when a proxy environment is present.
+
+Compatibility fixes in the reissued 1.1.0: reasoning-only final answers are promoted to
+`content`, `<|message_end|>` is stripped, a missing `finish_reason` is synthesized, and
+`max_tokens` is capped to the model's declared output limit. ZCode `x-session-id` and
+opencode `prompt_cache_key` are forwarded as `x-ot-session-id` / `user-session-id`, so
+model switches in one conversation reuse the same upstream CodeArts session.
 
 Run it standalone and declare the provider in `opencode.json`:
 

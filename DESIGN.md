@@ -191,6 +191,9 @@ CodeArts 每个账号最多 3 个并发会话，第 4 个返回 400 `TM.00001041
 - 槽位在**上游响应完全结束**后才 `release()`，覆盖正常、流中断、fetch 失败所有路径。
 - 若仍撞上上游 `TM.00001041`（其他 CLI/IDE 占用会话），读取错误体并改写为 429
   `codearts_concurrency_limit`。
+- 会话复用：客户端 `x-session-id` 或请求体 `prompt_cache_key` 会映射为上游
+  `x-ot-session-id` / `user-session-id` 并参与签名；同一会话切换模型只占一个上游会话，
+  避免切 3 次模型就把 3 个会话额度耗尽。
 - OpenAI 与 Anthropic 两条路径共用同一个闸门；元数据请求不经过闸门。
 
 ### 直连策略
@@ -209,6 +212,10 @@ CodeArts 每个账号最多 3 个并发会话，第 4 个返回 400 `TM.00001041
 - `tool_choice` 对象 → 枚举；强制工具时 `required` + 窄化 `tools`。
 - `reasoning_effort`：`none/minimal/medium/xhigh` → `low|high|max`
   （CodeArts 的 thinking 模型只接受这三档）。
+- `max_tokens` 截断到模型的 `limit.output`（如 kimi 的 256000 → 65536），避免上游
+  `InferHub.001001005.400`。
+- 响应侧兜底：SSE 缺 `finish_reason` 时补 `stop` / `tool_calls`；最终回答只在
+  `reasoning_content` 时回填 `content`；清理 `<|message_end|>` 控制符。
 
 ### 视觉回落
 
@@ -319,7 +326,7 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（118 项）
+└── *.test.ts             vitest（124 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
@@ -359,7 +366,7 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，118 项）：
+`npm test`（vitest，124 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。
@@ -372,6 +379,10 @@ scripts/
 - 代理：`/status`、缺少凭据 401、web 登录状态/logout、签名转发、SSE 透传、实时模型、
   `/models/<id>`、用量、并发串行化、队列满 429、`TM.00001041` → 429、上下文超长提示、
   视觉回落、Anthropic。
+- 响应归一化：reasoning-only 回填 `content`、`<|message_end|>` 清理、缺 `finish_reason`
+  补 `stop` / `tool_calls`、`max_tokens` 截断到模型输出上限。
+- 会话复用：`x-session-id` 优先、`prompt_cache_key` 兜底，两者都写入上游
+  `x-ot-session-id` / `user-session-id`。
 - 签到：Cookie JSON/Netscape/cURL/裸头解析、`devclouddevuibjtcftk` 优先、两个每日签到活动、
   `ELIGIBLE` 领取、`CONFIRMED`/`40001` 已领取、`endedCampaigns`/过期跳过、无活动按完成、
   `HW-AJAX-REDIRECT` 失效、缺少 Cookie 时拒绝请求、web user token 头。
@@ -390,6 +401,10 @@ scripts/
 - Anthropic 非流/流式/thinking → 转换正常；
 - `opencode models --standalone` → `codearts/<model>` 出现；
 - 仅 provider 配置（无 plugin 数组）→ `codearts/<model>` 出现；
+- opencode v2.3.2：glm/openpangu 基础对话、`shell` 工具调用、同会话
+  `glm → openpangu → kimi → deepseek` 均正常且上下文共用；
+- ZCode provider 级：openpangu 原始 reasoning-only 请求已回填正文；同会话 4 模型切换
+  全部 200，无 429；
 - TUI 网页登录（`CodeArts_Tui` + PKCE + DPoP）→ 保存 `web-auth.json`；
 - 清空 AK/SK/profile 后，`/status` 显示 `source: "web"`，`/models` 实时列表正常；
 - 签到接口：TUI OAuth token 不含 web user token，实际领取需要浏览器 Cookie；
