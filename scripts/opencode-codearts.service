@@ -1,0 +1,39 @@
+# systemd user service for the opencode-codearts proxy (Linux).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/opencode-codearts.service ~/.config/systemd/user/
+#   # edit WorkingDirectory / ExecStart if the repo is not at the default path
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now opencode-codearts
+#
+# Logs:  journalctl --user -u opencode-codearts -f
+# Status: systemctl --user status opencode-codearts
+
+[Unit]
+Description=opencode-codearts proxy (Huawei Cloud CodeArts model bridge)
+After=network-online.target
+
+[Service]
+Type=simple
+# >>> EDIT THESE to your install location >>>
+WorkingDirectory=%h/OpenCodePlugins/opencode-codearts
+ExecStart=/usr/bin/env node %h/OpenCodePlugins/opencode-codearts/dist/proxy-cli.js
+# <<< EDIT <<<
+
+Environment=CODEARTS_PROXY_PORT=17228
+Environment=CODEARTS_LOG_LEVEL=info
+# Credentials come from CODEARTS_CLI_AK / CODEARTS_CLI_SK in the unit
+# environment, then from the login shell's profile (~/.zshrc, ~/.bashrc,
+# ~/.profile, fish config). Uncomment to pin one file explicitly:
+#Environment=CODEARTS_ENV_FILE=%h/.zshrc
+
+Restart=on-failure
+RestartSec=3
+
+# Logging → journald (view with: journalctl --user -u opencode-codearts -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

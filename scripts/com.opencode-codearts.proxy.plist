@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for the opencode-codearts proxy (macOS).
+
+  Install:
+    mkdir -p ~/Library/LaunchAgents
+    cp scripts/com.opencode-codearts.proxy.plist ~/Library/LaunchAgents/
+    # edit the paths marked EDIT below, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-codearts.proxy.plist
+    # older macOS: launchctl load -w ~/Library/LaunchAgents/com.opencode-codearts.proxy.plist
+
+  Status / logs / stop:
+    launchctl list | grep opencode-codearts
+    tail -f ~/Library/Logs/opencode-codearts.log
+    launchctl bootout gui/$(id -u)/com.opencode-codearts.proxy
+
+  launchd does not read your shell profile and starts with a bare PATH, so
+  ProgramArguments needs the absolute path to node. Credentials are read from
+  CODEARTS_CLI_AK / CODEARTS_CLI_SK in EnvironmentVariables, or from the shell
+  profile fallback.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.opencode-codearts.proxy</string>
+
+  <!-- >>> EDIT THESE to your node binary and install location >>> -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/me/OpenCodePlugins/opencode-codearts/dist/proxy-cli.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/me/OpenCodePlugins/opencode-codearts</string>
+
+  <!-- launchd has no journal, so stdout/stderr go to files. -->
+  <key>StandardOutPath</key>
+  <string>/Users/me/Library/Logs/opencode-codearts.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/me/Library/Logs/opencode-codearts.log.err</string>
+  <!-- <<< EDIT <<< -->
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CODEARTS_PROXY_PORT</key>
+    <string>17228</string>
+    <key>CODEARTS_LOG_LEVEL</key>
+    <string>info</string>
+    <!-- Used by the shell-profile credential fallback. The installer replaces
+         this with the shell you ran it from. -->
+    <key>SHELL</key>
+    <string>/bin/zsh</string>
+    <!-- Set the pair here, or rely on the shell profile fallback:
+    <key>CODEARTS_CLI_AK</key>
+    <string>...</string>
+    <key>CODEARTS_CLI_SK</key>
+    <string>...</string>
+    -->
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart after a crash but not after a clean stop. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+</dict>
+</plist>

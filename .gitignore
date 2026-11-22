@@ -1,7 +1,6 @@
 # Dependencies
 node_modules/
 bun.lockb
-package-lock.json
 
 # Logs
 *.log
@@ -10,8 +9,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Build / dist
-dist/
+# Build metadata (dist/ is committed so a direct GitHub install works)
 build/
 *.tsbuildinfo
 
@@ -27,6 +25,7 @@ desktop.ini
 
 # Local agent / tooling state
 .opencode/
+.codeartsdoer/
 
 # Env / secrets
 .env
