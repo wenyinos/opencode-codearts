@@ -27,7 +27,7 @@ import { CodeArtsProxy } from "./proxy.js"
 
 /** Base URL opencode should use; follows CODEARTS_PROXY_PORT. */
 export function proxyBaseUrl(): string {
-  return `http://${PROXY_HOST}:${proxyPort()}/api/v2`
+  return `http://${PROXY_HOST}:${proxyPort()}/v2`
 }
 
 // ---------------------------------------------------------------------------

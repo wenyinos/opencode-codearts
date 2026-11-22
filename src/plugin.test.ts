@@ -20,12 +20,12 @@ describe("applyConfigHook", () => {
     expect(provider).toMatchObject({
       name: "CodeArts",
       npm: "@ai-sdk/openai-compatible",
-      api: "http://127.0.0.1:17228/api/v2",
+      api: "http://127.0.0.1:17228/v2",
       env: [],
     })
     const options = provider.options as Record<string, unknown>
     expect(options.apiKey).toBe("opencode-oauth-dummy-key")
-    expect(options.baseURL).toBe("http://127.0.0.1:17228/api/v2")
+    expect(options.baseURL).toBe("http://127.0.0.1:17228/v2")
 
     const models = provider.models as Record<string, ModelInfo>
     expect(Object.keys(models)).toHaveLength(12)
@@ -72,11 +72,11 @@ describe("applyConfigHook", () => {
 
   it("follows CODEARTS_PROXY_PORT", () => {
     process.env.CODEARTS_PROXY_PORT = "18080"
-    expect(proxyBaseUrl()).toBe("http://127.0.0.1:18080/api/v2")
+    expect(proxyBaseUrl()).toBe("http://127.0.0.1:18080/v2")
     const cfg: { provider?: Record<string, unknown> } = {}
     applyConfigHook(cfg)
     expect((cfg.provider!.codearts as { api: string }).api).toBe(
-      "http://127.0.0.1:18080/api/v2",
+      "http://127.0.0.1:18080/v2",
     )
   })
 })

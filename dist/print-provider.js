@@ -8,7 +8,7 @@
 // needed when the proxy runs by itself.
 import { CATALOG, OAUTH_DUMMY_KEY, PROXY_HOST, PROVIDER_ID, proxyPort, } from "./config.js";
 import { loadPersistedModels } from "./models.js";
-const api = `http://${PROXY_HOST}:${proxyPort()}/api/v2`;
+const api = `http://${PROXY_HOST}:${proxyPort()}/v2`;
 const provider = {
     [PROVIDER_ID]: {
         name: "CodeArts",

@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-117%20passing-success)
+![tests](https://img.shields.io/badge/tests-118%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -113,14 +113,19 @@ npm run print-provider
     "codearts": {
       "name": "CodeArts",
       "npm": "@ai-sdk/openai-compatible",
-      "api": "http://127.0.0.1:17228/api/v2",
+      "api": "http://127.0.0.1:17228/v2",
       "env": [],
-      "options": { "apiKey": "opencode-oauth-dummy-key", "baseURL": "http://127.0.0.1:17228/api/v2" },
+      "options": { "apiKey": "opencode-oauth-dummy-key", "baseURL": "http://127.0.0.1:17228/v2" },
       "models": { "GLM-5.2": { "...": "..." } }
     }
   }
 }
 ```
+
+ZCode / 其他 OpenAI 兼容客户端：Base URL 填 `http://127.0.0.1:17228/v2`
+（实际请求为 `/v2/chat/completions`）。Anthropic / Claude Code 用
+`ANTHROPIC_BASE_URL=http://127.0.0.1:17228/anthropic`。代理同时兼容省略 `/v2`、
+旧 `/api/v2` 前缀和 `/v1` 前缀的路径。
 
 把 `provider.codearts` 合并进现有 `opencode.json`，重启 opencode：
 
@@ -247,7 +252,7 @@ claude
 
 | 路由 | 说明 |
 | --- | --- |
-| `POST /api/v2/chat/completions` | OpenAI 兼容，签名转发（SSE 透传） |
+| `POST /v2/chat/completions` | OpenAI 兼容，签名转发（SSE 透传）；省略 `/v2` 或旧 `/api/v2`、`/v1` 前缀也可 |
 | `POST /anthropic/v1/messages` | Anthropic Messages 兼容（流式/非流式） |
 | `GET /models` | OpenAI 风格模型列表 + 全部上游字段（实时失败时回退缓存） |
 | `GET /models/<id>` | 单个模型的完整记录（含 `upstream` 原始对象） |
@@ -421,7 +426,7 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 **opencode-codearts** is a local proxy and optional opencode plugin for Huawei Cloud
 CodeArts (码道). It authenticates with `CODEARTS_CLI_AK` / `CODEARTS_CLI_SK` by default
 (an optional TUI web login can serve as a model fallback; no magpie), signs every request
-with Huawei's SDK-HMAC-SHA256, and serves both OpenAI (`/api/v2/chat/completions`) and
+with Huawei's SDK-HMAC-SHA256, and serves both OpenAI (`/v2/chat/completions`) and
 Anthropic (`/anthropic/v1/messages`) APIs on `127.0.0.1:17228` (override with
 `CODEARTS_PROXY_PORT`). Connections are direct; the proxy never reads OS proxy settings
 and pins `NO_PROXY=*` when a proxy environment is present.

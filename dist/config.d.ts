@@ -33,7 +33,7 @@ export declare const SECURITY_TOKEN_ENV = "CODEARTS_CLI_SECURITY_TOKEN";
  */
 export declare const DEFAULT_PROXY_PORT = 17228;
 export declare const PROXY_HOST = "127.0.0.1";
-export declare const PROXY_BASE_URL = "http://127.0.0.1:17228/api/v2";
+export declare const PROXY_BASE_URL = "http://127.0.0.1:17228/v2";
 /** Timeout for metadata requests (model list, usage, status). */
 export declare const REQUEST_TIMEOUT_MS = 30000;
 /** How long the upstream may stay silent before a streaming turn is aborted. */

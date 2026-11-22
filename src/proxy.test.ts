@@ -92,8 +92,40 @@ describe("CodeArtsProxy", () => {
       ak: "AKID****LE",
       missing: [],
     })
-    expect(status.base_url).toBe(`${baseOf(proxy)}/api/v2`)
+    expect(status.base_url).toBe(`${baseOf(proxy)}/v2`)
     expect(JSON.stringify(status)).not.toContain("SECRET")
+  })
+
+  it("accepts /v2, bare, /v1 and legacy /api/v2 chat prefixes", async () => {
+    const upstream = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain */
+      }
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ id: "mock", object: "chat.completion", choices: [] }))
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const base = baseOf(proxy)
+    for (const path of [
+      "/v2/chat/completions",
+      "/chat/completions",
+      "/v1/chat/completions",
+      "/api/v2/chat/completions",
+    ]) {
+      const response = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "GLM-5.2", messages: [], stream: false }),
+      })
+      expect(response.status, path).toBe(200)
+    }
+    expect((await fetch(`${base}/v2/status`)).status).toBe(200)
   })
 
   it("reports missing credentials and refuses a chat request", async () => {

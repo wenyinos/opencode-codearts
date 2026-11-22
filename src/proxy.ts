@@ -7,7 +7,7 @@
 // forwards it to CodeArts.
 //
 // Endpoints (all on http://127.0.0.1:17228 by default):
-//   POST /api/v2/chat/completions  — signed forward (streaming passthrough)
+//   POST /v2/chat/completions     — signed forward (streaming passthrough)
 //   GET  /models                   — live model list (or the cached catalogue)
 //   GET  /usage                    — credit-package usage
 //   GET  /status                   — { configured, ak, missing, ... }
@@ -143,6 +143,19 @@ function prepareOpenAIBody(input: Uint8Array<ArrayBuffer>): {
   }
 }
 
+/**
+ * Normalize the local API prefix. `/v2` is the documented base (same as
+ * opencode-deveco); bare paths and the legacy `/api/v2` / `/v1` prefixes used
+ * by older client configs are accepted too.
+ */
+export function normalizeProxyPath(pathname: string): string {
+  const route = pathname
+    .replace(/^\/api\/v2(?=\/|$)/, "")
+    .replace(/^\/v2(?=\/|$)/, "")
+    .replace(/^\/v1(?=\/|$)/, "")
+  return route || "/"
+}
+
 /** Combine abort signals (AbortSignal.any is not available on every runtime). */
 function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
   const controller = new AbortController()
@@ -232,7 +245,7 @@ export class CodeArtsProxy {
     if (address && typeof address === "object") this.port = address.port
 
     log.info(`opencode-codearts proxy listening on http://${this.hostname}:${this.port}`)
-    log.info(`  chat:  POST /api/v2/chat/completions`)
+    log.info(`  chat:  POST /v2/chat/completions`)
     log.info(`  info:  GET  /status  /models  /usage`)
   }
 
@@ -265,21 +278,22 @@ export class CodeArtsProxy {
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${this.hostname}:${this.port}`}`)
     const pathname = url.pathname
+    // Accept /v2/... (the documented base), bare /..., and the legacy
+    // /api/v2/... and /v1/... prefixes used by older client configs.
+    const route = normalizeProxyPath(pathname)
 
-    if (pathname === "/" || pathname === "/health") {
+    if (route === "/" || route === "/health") {
       return this.json(res, 200, { ok: true, provider: PROVIDER_ID, version: PLUGIN_VERSION })
     }
-    if (pathname === "/status") return this.status(res)
-    if (pathname === "/models" || pathname === "/v1/models" || pathname === "/api/v2/models") {
+    if (route === "/status") return this.status(res)
+    if (route === "/models") {
       return this.models(res)
     }
-    const modelPrefix = ["/models/", "/v1/models/", "/api/v2/models/"].find((prefix) =>
-      pathname.startsWith(prefix),
-    )
+    const modelPrefix = route.startsWith("/models/") ? "/models/" : null
     if (modelPrefix) {
       let id: string
       try {
-        id = decodeURIComponent(pathname.slice(modelPrefix.length))
+        id = decodeURIComponent(route.slice(modelPrefix.length))
       } catch {
         return this.json(res, 400, {
           error: { message: "invalid model id encoding", type: "invalid_request_error" },
@@ -287,8 +301,8 @@ export class CodeArtsProxy {
       }
       return this.modelInfo(res, id)
     }
-    if (pathname === "/usage") return this.usage(res)
-    if (pathname === "/login") {
+    if (route === "/usage") return this.usage(res)
+    if (route === "/login") {
       try {
         const started = await startWebLogin({ open: false })
         return this.json(res, 200, {
@@ -308,11 +322,11 @@ export class CodeArtsProxy {
         })
       }
     }
-    if (pathname === "/logout") {
+    if (route === "/logout") {
       clearWebAuth()
       return this.json(res, 200, { ok: true })
     }
-    if (pathname === "/signin") {
+    if (route === "/signin") {
       const credential = await currentWebCredential()
       const result = await claimDailyBenefit({
         cookie: readWebCookie(this.env),
@@ -323,10 +337,10 @@ export class CodeArtsProxy {
       const status = result.ok ? 200 : result.authExpired ? 401 : 502
       return this.json(res, status, result)
     }
-    if (pathname === "/anthropic/v1/messages" && req.method === "POST") {
+    if (route === "/anthropic/v1/messages" && req.method === "POST") {
       return this.forwardAnthropic(req, res)
     }
-    if (pathname === "/api/v2/chat/completions" && req.method === "POST") {
+    if (route === "/chat/completions" && req.method === "POST") {
       return this.forwardChat(req, res)
     }
     return this.json(res, 404, {
@@ -346,7 +360,7 @@ export class CodeArtsProxy {
       source: status.source,
       source_file: status.sourceFile ?? null,
       missing: status.missing,
-      base_url: `http://${this.hostname}:${this.port}/api/v2`,
+      base_url: `http://${this.hostname}:${this.port}/v2`,
       anthropic_base_url: `http://${this.hostname}:${this.port}/anthropic`,
       upstream: this.upstreamBase,
       models: Object.keys(cached).length,

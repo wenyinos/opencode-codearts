@@ -15,7 +15,7 @@ import { loadPersistedModels, mergeModels, refreshModelCatalog } from "./models.
 import { CodeArtsProxy } from "./proxy.js";
 /** Base URL opencode should use; follows CODEARTS_PROXY_PORT. */
 export function proxyBaseUrl() {
-    return `http://${PROXY_HOST}:${proxyPort()}/api/v2`;
+    return `http://${PROXY_HOST}:${proxyPort()}/v2`;
 }
 /** Convert one catalogue entry into the V2 model record the host expects. */
 export function toV2Model(id, info) {

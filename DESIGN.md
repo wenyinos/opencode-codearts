@@ -23,7 +23,7 @@
 
 ```
 opencode / Claude Code
-  │  OpenAI:    POST http://127.0.0.1:17228/api/v2/chat/completions
+  │  OpenAI:    POST http://127.0.0.1:17228/v2/chat/completions
   │  Anthropic: POST http://127.0.0.1:17228/anthropic/v1/messages
   ▼
 本地代理 CodeArtsProxy
@@ -108,9 +108,9 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 
 | 路由 | 行为 |
 | --- | --- |
-| `POST /api/v2/chat/completions` | OpenAI 兼容：归一化 → 签名 → 转发；SSE 逐块透传 |
+| `POST /v2/chat/completions` | OpenAI 兼容：归一化 → 签名 → 转发；SSE 逐块透传（省略 `/v2` 或旧 `/api/v2`、`/v1` 前缀也可） |
 | `POST /anthropic/v1/messages` | Anthropic Messages：转换 → 签名 → 转发；流式事件转换 |
-| `GET /models`、`/v1/models`、`/api/v2/models` | 实时拉 `/v1/model/builtin`，失败回退快照/静态目录；每个模型带全部上游字段 |
+| `GET /v2/models`（或 `/models`） | 实时拉 `/v1/model/builtin`，失败回退快照/静态目录；每个模型带全部上游字段 |
 | `GET /models/<id>` 等 | 单个模型的完整记录（含 `upstream` 原始对象） |
 | `GET /usage` | 签名 GET `/snap-manager/v1/statistics/plugin`，映射为积分窗口 |
 | `GET /login` | 启动 TUI 网页登录，返回 `login_url`；回调后保存 `web-auth.json` |
@@ -319,7 +319,7 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（117 项）
+└── *.test.ts             vitest（118 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
@@ -359,7 +359,7 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，117 项）：
+`npm test`（vitest，118 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。

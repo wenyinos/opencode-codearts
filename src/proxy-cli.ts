@@ -1,6 +1,6 @@
 // Standalone proxy entry: `npm run start:proxy` (or `node dist/proxy-cli.js`).
 // Useful for debugging without opencode: point any OpenAI-compatible client at
-// http://127.0.0.1:17228/api/v2.
+// http://127.0.0.1:17228/v2.
 
 import { credentialStatus } from "./credentials.js"
 import { CodeArtsProxy } from "./proxy.js"

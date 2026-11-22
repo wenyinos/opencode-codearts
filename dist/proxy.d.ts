@@ -3,6 +3,12 @@ import { type Fetcher } from "./http.js";
 export declare function isConcurrencyLimit(bodyText: string): boolean;
 /** Is this upstream error a prompt-too-long rejection? */
 export declare function isContextLimit(bodyText: string): boolean;
+/**
+ * Normalize the local API prefix. `/v2` is the documented base (same as
+ * opencode-deveco); bare paths and the legacy `/api/v2` / `/v1` prefixes used
+ * by older client configs are accepted too.
+ */
+export declare function normalizeProxyPath(pathname: string): string;
 export interface CodeArtsProxyOptions {
     port?: number;
     hostname?: string;

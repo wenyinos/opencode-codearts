@@ -16,7 +16,7 @@ import {
 } from "./config.js"
 import { loadPersistedModels } from "./models.js"
 
-const api = `http://${PROXY_HOST}:${proxyPort()}/api/v2`
+const api = `http://${PROXY_HOST}:${proxyPort()}/v2`
 const provider = {
   [PROVIDER_ID]: {
     name: "CodeArts",
