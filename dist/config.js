@@ -17,6 +17,12 @@ export const PLUGIN_VERSION = typeof packageJson.version === "string" && package
 // ---------------------------------------------------------------------------
 /** Provider id in opencode config and in model ids (`codearts/<model>`). */
 export const PROVIDER_ID = "codearts";
+// Mirror the CodeArts CLI's risk-control/telemetry headers. Values observed
+// from `codearts run --print-logs --log-level DEBUG` on CLI 26.11.11.
+export const CODEARTS_CLIENT_TYPE = "CLI";
+export const CODEARTS_CLIENT_VERSION = "26.11.11";
+export const CODEARTS_CLIENT_FUNCTION = "agent-tui";
+export const CODEARTS_ORIGIN_URL = "https://github.com/wenyinos/opencode-codearts";
 /**
  * Placeholder apiKey. opencode requires *some* apiKey before it instantiates an
  * OpenAI-compatible provider; the real autentication is the signed request the

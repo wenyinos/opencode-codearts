@@ -27,10 +27,6 @@
     "start": "node dist/daemon.js",
     "start:proxy": "node dist/proxy-cli.js",
     "login": "node dist/login-cli.js",
-    "signin": "node dist/signin-cli.js",
-    "signin:import-cookie": "node dist/import-cookie.js",
-    "signin:enable": "bash scripts/enable-signin-timer.sh",
-    "signin:disable": "bash scripts/disable-signin-timer.sh",
     "print-provider": "node dist/print-provider.js",
     "clean": "node -e \"import('fs').then(f=>f.rmSync('dist',{recursive:true,force:true}))\""
   },

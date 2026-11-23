@@ -148,10 +148,8 @@ describe("CodeArtsProxy", () => {
     const proxy = await startProxy({ env: ENV })
     const status = (await (await fetch(`${baseOf(proxy)}/status`)).json()) as {
       web_auth: { available: boolean; source: string }
-      web_cookie: boolean
     }
     expect(status.web_auth).toMatchObject({ available: false, source: "none" })
-    expect(status.web_cookie).toBe(false)
 
     const logout = await fetch(`${baseOf(proxy)}/logout`)
     expect(logout.status).toBe(200)
@@ -199,6 +197,18 @@ describe("CodeArtsProxy", () => {
     expect(captured[0].headers["x-security-token"]).toBeUndefined()
     expect(captured[0].headers["x-ot-session-id"]).toBe("sess_test_123")
     expect(captured[0].headers["user-session-id"]).toBe("sess_test_123")
+    expect(captured[0].headers["x-session-affinity"]).toBe("sess_test_123")
+    expect(captured[0].headers["x-ot-client-type"]).toBe("CLI")
+    expect(captured[0].headers["x-ot-client-version"]).toBe("26.11.11")
+    expect(captured[0].headers["x-ot-function"]).toBe("agent-tui")
+    expect(captured[0].headers["x-ot-trace-id"]).toMatch(/^[0-9a-f]{32}$/)
+    expect(captured[0].headers["x-ot-span-id"]).toMatch(/^[0-9a-f]{16}$/)
+    expect(captured[0].headers["x-snap-traceid"]).toMatch(/^[0-9a-f]{32}_[0-9a-f]{16}$/)
+    expect(captured[0].headers["user-msg-id"]).toMatch(/^msg_/)
+    expect(captured[0].headers["created-time"]).toMatch(/Z$/)
+    expect(captured[0].headers["model-id"]).toBe("glm-5.3-flash")
+    expect(captured[0].headers["model-name"]).toBe("GLM-5.3-Flash")
+    expect(captured[0].headers["x-language"]).toBe("zh-cn")
     const forwarded = JSON.parse(captured[0].body) as {
       max_tokens?: number
       max_completion_tokens?: number

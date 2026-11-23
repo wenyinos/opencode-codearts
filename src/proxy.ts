@@ -17,10 +17,15 @@
 // CODEARTS_CLI_SK, exactly like the CodeArts CLI.
 
 import http from "node:http"
+import { randomBytes, randomUUID } from "node:crypto"
 import {
   ANTHROPIC_MODEL_ENV,
   CATALOG,
   CHAT_API_BASE,
+  CODEARTS_CLIENT_FUNCTION,
+  CODEARTS_CLIENT_TYPE,
+  CODEARTS_CLIENT_VERSION,
+  CODEARTS_ORIGIN_URL,
   DEFAULT_ANTHROPIC_MODEL,
   PLUGIN_VERSION,
   PROXY_HOST,
@@ -56,7 +61,6 @@ import {
 } from "./models.js"
 import { describeNetworkError } from "./network-error.js"
 import { normalizeOpenAIChatBody } from "./normalize.js"
-import { claimDailyBenefit, readWebCookie } from "./signin.js"
 import { signRequestHuawei } from "./signing.js"
 import {
   clearWebAuth,
@@ -171,6 +175,44 @@ function clientSessionId(req: http.IncomingMessage): string {
     req.headers["user-session-id"]
   const value = Array.isArray(raw) ? raw[0] : raw
   return sanitizeSessionId(value)
+}
+
+const FALLBACK_SESSION_ID = `ses_${randomUUID().replace(/-/g, "").slice(0, 24)}`
+
+/**
+ * Headers emitted by the CodeArts CLI for tracing and risk control. Mirroring
+ * them keeps proxy traffic looking like the official client instead of an
+ * anonymous signed request.
+ */
+function codeartsClientHeaders(sessionId: string, model: string): Record<string, string> {
+  const traceId = randomUUID().replace(/-/g, "")
+  const spanId = randomBytes(8).toString("hex")
+  const messageId = `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`
+  const createdAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z")
+  const modelName = CATALOG[model]?.name ?? model
+  return {
+    "x-ot-trace-id": traceId,
+    "x-ot-span-id": spanId,
+    "x-snap-traceid": `${traceId}_${spanId}`,
+    "x-ot-session-id": sessionId,
+    "x-ot-parent-session-id": "",
+    "user-session-id": sessionId,
+    "x-session-affinity": sessionId,
+    "x-ot-function": CODEARTS_CLIENT_FUNCTION,
+    "x-ot-client-type": CODEARTS_CLIENT_TYPE,
+    "x-ot-client-version": CODEARTS_CLIENT_VERSION,
+    "plugin-name": CODEARTS_CLIENT_TYPE,
+    "plugin-version": CODEARTS_CLIENT_VERSION,
+    "ide-name": CODEARTS_CLIENT_TYPE,
+    "ide-version": "",
+    "x-language": "zh-cn",
+    "x-remote-origin-url": CODEARTS_ORIGIN_URL,
+    "user-msg-id": messageId,
+    "x-message-id": messageId,
+    "created-time": createdAt,
+    "model-id": model,
+    "model-name": modelName,
+  }
 }
 
 /**
@@ -404,17 +446,6 @@ export class CodeArtsProxy {
       clearWebAuth()
       return this.json(res, 200, { ok: true })
     }
-    if (route === "/signin") {
-      const credential = await currentWebCredential()
-      const result = await claimDailyBenefit({
-        cookie: readWebCookie(this.env),
-        credential,
-        fetcher: this.fetcher,
-        env: this.env,
-      })
-      const status = result.ok ? 200 : result.authExpired ? 401 : 502
-      return this.json(res, status, result)
-    }
     if (route === "/anthropic/v1/messages" && req.method === "POST") {
       return this.forwardAnthropic(req, res)
     }
@@ -443,7 +474,6 @@ export class CodeArtsProxy {
       upstream: this.upstreamBase,
       models: Object.keys(cached).length,
       web_auth: webAuthStatus(),
-      web_cookie: Boolean(readWebCookie(this.env)),
       doc: CREDENTIALS_DOC,
     })
   }
@@ -597,7 +627,7 @@ export class CodeArtsProxy {
     try {
       armIdle()
       // Sign after admission: a long queue wait must not age the signature.
-      const sessionId = clientSessionId(req) || prepared.sessionId
+      const sessionId = clientSessionId(req) || prepared.sessionId || FALLBACK_SESSION_ID
       const signed = await signRequestHuawei({
         ak: credentials.ak,
         sk: credentials.sk,
@@ -607,15 +637,13 @@ export class CodeArtsProxy {
         body,
         extraHeaders: {
           "content-type": "application/json",
-          ...(sessionId
-            ? { "x-ot-session-id": sessionId, "user-session-id": sessionId }
-            : {}),
+          ...codeartsClientHeaders(sessionId, prepared.model),
         },
       })
       const headers = new Headers(signed.headers)
       const accept = req.headers.accept
       if (typeof accept === "string" && accept) headers.set("accept", accept)
-      headers.set("user-agent", `opencode-codearts/${PLUGIN_VERSION}`)
+      headers.set("user-agent", `opencode/${CODEARTS_CLIENT_VERSION}`)
 
       let upstream: Response
       try {
@@ -940,7 +968,7 @@ export class CodeArtsProxy {
 
     try {
       armIdle()
-      const sessionId = clientSessionId(req)
+      const sessionId = clientSessionId(req) || FALLBACK_SESSION_ID
       const signed = await signRequestHuawei({
         ak: credentials.ak,
         sk: credentials.sk,
@@ -950,14 +978,12 @@ export class CodeArtsProxy {
         body,
         extraHeaders: {
           "content-type": "application/json",
-          ...(sessionId
-            ? { "x-ot-session-id": sessionId, "user-session-id": sessionId }
-            : {}),
+          ...codeartsClientHeaders(sessionId, upstreamModel),
         },
       })
       const headers = new Headers(signed.headers)
       headers.set("accept", isStream ? "text/event-stream" : "application/json")
-      headers.set("user-agent", `opencode-codearts/${PLUGIN_VERSION}`)
+      headers.set("user-agent", `opencode/${CODEARTS_CLIENT_VERSION}`)
       const anthropicVersion = req.headers["anthropic-version"]
       if (typeof anthropicVersion === "string" && anthropicVersion) {
         headers.set("anthropic-version", anthropicVersion)

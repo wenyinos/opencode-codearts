@@ -2,6 +2,10 @@
 export declare const PLUGIN_VERSION: string;
 /** Provider id in opencode config and in model ids (`codearts/<model>`). */
 export declare const PROVIDER_ID = "codearts";
+export declare const CODEARTS_CLIENT_TYPE = "CLI";
+export declare const CODEARTS_CLIENT_VERSION = "26.11.11";
+export declare const CODEARTS_CLIENT_FUNCTION = "agent-tui";
+export declare const CODEARTS_ORIGIN_URL = "https://github.com/wenyinos/opencode-codearts";
 /**
  * Placeholder apiKey. opencode requires *some* apiKey before it instantiates an
  * OpenAI-compatible provider; the real autentication is the signed request the

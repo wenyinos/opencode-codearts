@@ -6,7 +6,7 @@
 
 1. 用本地代理把华为云码道（CodeArts）模型接入 opencode 与 Claude Code。
 2. 鉴权优先 `CODEARTS_CLI_AK` / `CODEARTS_CLI_SK`（与官方 CLI 同一套）；可选 TUI 网页登录
-   作为模型兜底，签到使用浏览器 Cookie。不依赖 magpie。
+   作为模型兜底。不依赖 magpie。
 3. 结构和 `opencode-deveco` 对齐：TypeScript + `src/` → `dist/` + 本地代理；
    同时提供 OpenAI 与 Anthropic 两套协议。
 4. 代理默认 **17228**（deveco 是 17128），两者可并存。
@@ -14,9 +14,8 @@
 
 **非目标**
 
-- 不把 TUI OAuth 当作签到凭据——它不返回网页 user token，签到仍用浏览器 Cookie。
 - 不保存 AK/SK 到磁盘；可选的 web 登录凭据保存在 `web-auth.json`（0600）。
-- 自动签到默认不启用，必须显式 `npm run signin:enable`。
+- 早期的可选每日签到已在 1.1.0 重发版移除：网页登录态频繁失效，无法可靠自动执行。
 - 不实现 DevEco 专有的 `exitSessionQueue`、真实姓名/区域门禁。
 
 ## 二、总体架构
@@ -73,7 +72,7 @@ profile **只读取不执行**，只匹配 `export KEY=value`、`KEY=value`、`s
 refresh token，可自动续期。AK/SK 存在时**永远优先**使用 AK/SK，因为网页登录态容易过期。
 
 > 实测 TUI OAuth 只返回临时 AK/SK/ST + refresh token，**不返回网页 user token**；
-> 因此它只能作为模型 API 的兜底，每日签到仍需要浏览器 Cookie（见“每日签到”）。
+> 因此它只能作为模型 API 的兜底（早期的每日签到依赖浏览器 Cookie，已随该功能移除）。
 
 这样设计的原因：代理可能由 systemd 或 opencode 后台 service 启动，进程环境里没有用户
 终端导出的变量。profile 兜底让变量“手动设置一次”即可长期生效；网页登录则给没有
@@ -102,6 +101,23 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 - AK/SK 路径**不发送** `maas_type: benefit`。实测带上该头会被网关拒绝（`APIG.0101`）。
 - 签名在拿到并发槽位之后进行，长时间排队不会让 `x-sdk-date` 过期。
 
+### 风控与追踪头
+
+`codearts run --print-logs --log-level DEBUG` 实测 CLI 26.11.11 会发送并签名以下头；代理逐一补齐：
+
+| 类别 | 头 |
+| --- | --- |
+| 追踪 | `x-ot-trace-id`（32 hex）、`x-ot-span-id`（16 hex）、`x-snap-traceid`（`<trace>_<span>`） |
+| 会话 | `x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity` |
+| 客户端 | `x-ot-client-type: CLI`、`x-ot-client-version: 26.11.11`、`x-ot-function: agent-tui` |
+| 插件/IDE | `plugin-name: CLI`、`plugin-version: 26.11.11`、`ide-name: CLI`、`ide-version: ""` |
+| 请求 | `user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`、`x-language: zh-cn`、`x-remote-origin-url` |
+
+- 每次请求生成新的 trace/span、message id 和 created-time；`x-snap-traceid` 由二者拼接。
+- 客户端未提供会话 ID 时使用进程级兜底 `ses_...`，避免出现无会话的裸签名请求。
+- 这些头全部通过 `extraHeaders` 进入 SDK-HMAC-SHA256 的签名范围。
+- 不发送 `X-Encrypt-Capable` / SM4 头，因为代理没有实现 CLI 的响应解密链路。
+
 ## 五、本地代理
 
 `src/proxy.ts`，默认 `127.0.0.1:17228`，`CODEARTS_PROXY_PORT` 可覆盖。
@@ -115,8 +131,7 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 | `GET /usage` | 签名 GET `/snap-manager/v1/statistics/plugin`，映射为积分窗口 |
 | `GET /login` | 启动 TUI 网页登录，返回 `login_url`；回调后保存 `web-auth.json` |
 | `GET /logout` | 清除网页登录态（不影响 AK/SK） |
-| `GET /signin` | 每日签到（浏览器 Cookie / web user token） |
-| `GET /status` | `{ configured, ak, source, source_file, missing, base_url, anthropic_base_url, models, web_auth, web_cookie }` |
+| `GET /status` | `{ configured, ak, source, source_file, missing, base_url, anthropic_base_url, models, web_auth }` |
 | `GET /health` | `{ ok: true }` |
 | `GET /login`、`/logout` | `410` + “请设置 CODEARTS_CLI_AK/SK”说明（明确没有网页登录） |
 
@@ -129,54 +144,6 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 
 端口冲突：如果目标端口已被**本代理**的另一个实例占用（systemd 服务 + 手动 `start:proxy`），
 `startProxy()` 会探测 `/status` 的 `provider` 字段并直接复用，不再让插件加载失败。
-
-### 每日签到
-
-`src/signin.ts` 走网页福利活动服务（axios baseURL 为 `/chat`）：
-
-```
-GET  https://devcloud.cn-north-4.huaweicloud.com
-     /chat/PromptCenterService/v1/ops/delivery?channel=WEB
-POST https://devcloud.cn-north-4.huaweicloud.com
-     /chat/PromptCenterService/v1/ops/claim
-body: { campaignId, idempotentKey: "daily-<id>-<YYYYMMDD>", channel: "WEB" }
-```
-
-当前两个每日签到活动（都是限时活动）：
-
-| campaignId | 标题 | 奖励 |
-| ---: | --- | ---: |
-| 34 | 每日签到领100积分 | 100 CREDIT |
-| 40 | Skill创新赛每日签到礼 | 1000 CREDIT |
-
-Skill 创新赛介绍：<https://developer.huaweicloud.com/competition/information/1300000350/html1>。
-默认按标题包含「每日签到」匹配，可用 `CODEARTS_SIGNIN_TITLES` 或
-`CODEARTS_SIGNIN_CAMPAIGNS=34,40` 覆盖。
-
-鉴权必须是网页登录态：浏览器 Cookie（含 `devclouddevuibjtcftk`），或 web user token
-（`x-auth-token`）。AK/SK 与 TUI OAuth token 都不能直接领取；`benefit/claim` 与
-`opengw` 的 AK/SK 路径都返回 `4000 invalid channel, group not found`。
-
-Cookie 来源：`CODEARTS_WEB_COOKIE` → `CODEARTS_WEB_COOKIE_FILE` →
-`~/.config/opencode/opencode-codearts/web-cookie.txt`（0600）。支持浏览器扩展 JSON、
-Playwright `{cookies}`、Netscape `cookies.txt`、完整 cURL（自动提取 `Cookie:`）或裸 Cookie。
-
-结果处理：
-
-- `code 0/200`：领取成功；
-- `CONFIRMED` / `CLAIMED` / `40001`（尚未刷新）：今日已领取，按成功处理；
-- `endedCampaigns` 或「过期/结束/未开始」：活动已结束，记录 `expired` 并跳过；
-- `401`/`403`/`HW-AJAX-REDIRECT`：登录态失效，需要重新导出 Cookie；
-- 两个活动都下线、列表为空：输出“未找到进行中的每日签到活动”，按完成处理；
-- 其他错误：非 0 退出，交给定时器日志。
-
-**自动签到是可选功能**：`install-autostart.sh` 只安装代理，不会启用签到 timer。
-用户先完成 `npm run login` 与 `npm run signin:import-cookie`（支持 Cookie-Editor/
-EditThisCookie JSON、剪贴板、cURL、Cookie 头），再用 `npm run signin:enable` 显式启用；
-`npm run signin:disable` 关闭。`signin:enable` 会检查 `web-auth.json` 和
-`web-cookie.txt`，然后安装 `opencode-codearts-signin.timer`（每天 08:00，`Persistent=true`）。
-
-`src/signin-cli.ts`（`npm run signin`）用于手动测试。
 
 ### 并发闸门（对齐 deveco）
 
@@ -289,12 +256,8 @@ CodeArts 每个账号最多 3 个并发会话，第 4 个返回 400 `TM.00001041
 - `scripts/install-autostart.sh` / `uninstall-autostart.sh`：Linux/macOS 一键安装/卸载自启动。
 - `scripts/install-autostart-windows.ps1` / `uninstall-autostart-windows.ps1`：
   Windows 启动文件夹快捷方式。
-- `scripts/opencode-codearts-signin.service` / `.timer`：每日 08:00 签到模板（Linux）。
-- `scripts/com.opencode-codearts.signin.plist`：每日 08:00 签到模板（macOS）。
-- `scripts/enable-signin-timer.sh` / `disable-signin-timer.sh`：签到 timer 的显式启用/关闭；
-  启用前检查 web 登录和 Cookie 文件。
 - 安装脚本会把当前 `$SHELL` 写入服务环境，保证 AK/SK 的 shell profile 兜底可用；
-  **不会**自动启用签到 timer。
+  卸载脚本会同时清理早期版本遗留的 `opencode-codearts-signin.*` 单元。
 - `src/print-provider.ts`（`npm run print-provider`）：输出 opencode 的 provider 配置，
   供“独立代理、不挂插件列表”的用法。
 
@@ -309,10 +272,7 @@ src/
 ├── credentials.ts        env → CODEARTS_ENV_FILE → shell profile → web login 解析
 ├── oauth.ts              TUI OAuth（CodeArts_Tui + PKCE + DPoP）
 ├── web-auth.ts           网页登录持久化、刷新、状态
-├── signin.ts             每日签到（Cookie / web user token）
 ├── login-cli.ts          npm run login
-├── signin-cli.ts         npm run signin
-├── import-cookie.ts      npm run signin:import-cookie
 ├── gate.ts               并发闸门（上限 + 有界队列 + 冷却）
 ├── signing.ts            SDK-HMAC-SHA256（WebCrypto）
 ├── normalize.ts          OpenAI 请求体归一化
@@ -326,13 +286,10 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（124 项）
+└── *.test.ts             vitest（106 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
-├── opencode-codearts-signin.service / .timer
-├── com.opencode-codearts.signin.plist
-├── enable-signin-timer.sh / disable-signin-timer.sh
 ├── install-autostart.sh / uninstall-autostart.sh
 ├── install-autostart-windows.ps1 / uninstall-autostart-windows.ps1
 └── start-windows.ps1 / stop-windows.ps1
@@ -366,7 +323,7 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，124 项）：
+`npm test`（vitest，106 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。
@@ -383,9 +340,6 @@ scripts/
   补 `stop` / `tool_calls`、`max_tokens` 截断到模型输出上限。
 - 会话复用：`x-session-id` 优先、`prompt_cache_key` 兜底，两者都写入上游
   `x-ot-session-id` / `user-session-id`。
-- 签到：Cookie JSON/Netscape/cURL/裸头解析、`devclouddevuibjtcftk` 优先、两个每日签到活动、
-  `ELIGIBLE` 领取、`CONFIRMED`/`40001` 已领取、`endedCampaigns`/过期跳过、无活动按完成、
-  `HW-AJAX-REDIRECT` 失效、缺少 Cookie 时拒绝请求、web user token 头。
 - 插件：V1 config hook 注入、用户 provider 保留、快照优先、端口跟随。
 - 网络错误：DNS、连接拒绝、超时、TLS、连接中断的提示与 cause 链。
 - supervisor：崩溃重启与退避。
@@ -407,9 +361,5 @@ scripts/
   全部 200，无 429；
 - TUI 网页登录（`CodeArts_Tui` + PKCE + DPoP）→ 保存 `web-auth.json`；
 - 清空 AK/SK/profile 后，`/status` 显示 `source: "web"`，`/models` 实时列表正常；
-- 签到接口：TUI OAuth token 不含 web user token，实际领取需要浏览器 Cookie；
-  `npm run signin:import-cookie` 直接导入 Cookie-Editor JSON（43 个 Cookie，识别到 cftk），
-  `npm run signin` 识别到两个活动（34 每日签到领100积分、40 Skill创新赛每日签到礼）
-  并返回“今日已领取”。
-- 自动签到 opt-in：`signin:disable` 移除 timer；`signin:enable` 检查 web 登录 + Cookie 后
-  重新安装/启用 `opencode-codearts-signin.timer`（每天 08:00）。
+- 早期可选每日签到（Cookie + timer）实测可领取两个活动，但网页登录态次日即失效，
+  无法可靠自动执行，已在 1.1.0 重发版移除。

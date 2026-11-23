@@ -5,7 +5,7 @@
 // ~/.config/opencode/opencode-codearts/web-auth.json (mode 0600).
 //
 // The model API still prefers CODEARTS_CLI_AK / CODEARTS_CLI_SK; this login is
-// the fallback for model calls and the login state used by `npm run signin`.
+// the fallback for model calls.
 
 import fs from "node:fs"
 import { startWebLogin } from "./web-auth.js"

@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-124%20passing-success)
+![tests](https://img.shields.io/badge/tests-106%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -11,8 +11,7 @@
 - **AK/SK 优先**：读取 `CODEARTS_CLI_AK` / `CODEARTS_CLI_SK`；可选 TUI 网页登录作为模型兜底。
 - **本地代理**：默认 `127.0.0.1:17228`，同时提供 OpenAI 与 Anthropic 两套接口。
 - **直连**：不读取系统代理；进程里存在 `HTTP(S)_PROXY` 时固定 `NO_PROXY=*`。
-- **凭据处理**：AK/SK 不落盘；可选 web 登录保存在 `web-auth.json`（0600），签到 Cookie 在 `web-cookie.txt`（0600）。
-- **每日签到（可选）**：默认不启用；导入浏览器 Cookie 后手动 `npm run signin:enable`。
+- **凭据处理**：AK/SK 不落盘；可选 web 登录保存在 `web-auth.json`（0600）。
 - **并发闸门**：对齐 `opencode-deveco`，最多 3 个并发会话，排队/429/冷却。
 - **会话复用**：ZCode 的 `x-session-id` 与 opencode 的 `prompt_cache_key` 会映射到上游
   `x-ot-session-id` / `user-session-id`；同一会话切模型不会重复占用 3 个上游会话。
@@ -74,8 +73,8 @@ codearts models
 登录结果保存在 `~/.config/opencode/opencode-codearts/web-auth.json`（0600），
 包含临时 AK/SK/ST、refresh token 和 DPoP 私钥，可自动续期。
 
-> 注意：TUI OAuth 登录**不返回**网页 user token；它能作为模型 API 的兜底，
-> 但每日签到还需要浏览器 Cookie（见下一节）。
+> 早期版本提供过可选的每日签到（Cookie 导入 + systemd timer）；因网页登录态频繁失效、
+> 无法可靠自动执行，该功能已在 1.1.0 重发版中移除。
 
 ## 用法一：独立本地代理（推荐，不需要插件列表）
 
@@ -264,97 +263,8 @@ claude
 | `GET /usage` | 积分套餐用量 |
 | `GET /login` | 启动 CodeArts TUI 网页登录，返回 `login_url` |
 | `GET /logout` | 清除网页登录态（不影响 AK/SK） |
-| `GET /signin` | 每日签到（使用浏览器 Cookie / web token） |
-| `GET /status` | `{ configured, ak, source, web_auth, web_cookie, ... }`，不泄露 SK |
+| `GET /status` | `{ configured, ak, source, web_auth, ... }`，不泄露 SK |
 | `GET /health` | 存活检查 |
-
-### 每日签到
-
-网页签到走福利活动服务：
-
-```text
-GET  https://devcloud.cn-north-4.huaweicloud.com/chat/PromptCenterService/v1/ops/delivery?channel=WEB
-POST https://devcloud.cn-north-4.huaweicloud.com/chat/PromptCenterService/v1/ops/claim
-```
-
-默认匹配标题包含「每日签到」的活动，当前有两个：
-
-| campaignId | 活动 | 奖励 | 说明 |
-| ---: | --- | ---: | --- |
-| 34 | 每日签到领100积分 | 100 积分 | 每日签到 |
-| 40 | Skill创新赛每日签到礼 | 1000 积分 | 每日签到；限时活动，介绍见 [Skill 创新赛](https://developer.huaweicloud.com/competition/information/1300000350/html1) |
-
-两个都是限时活动。`npm run signin` 会先拉活动列表，只领取 `ELIGIBLE` / `claimable` 的活动；
-今日已领取（`CONFIRMED` / `CLAIMED` / `40001`）和已结束（`endedCampaigns`、过期错误）都按
-“已领取/跳过”处理，**不会让定时器报错**。活动彻底下线后输出“未找到进行中的每日签到活动”，
-也按完成处理。
-
-**自动签到默认不启用**：`scripts/install-autostart.sh` 只安装代理服务，不会安装签到 timer。
-只有先完成下面的 web 登录 + Cookie 导入，才建议执行 `npm run signin:enable`。
-
-签到要求**网页登录 Cookie**（含 `devclouddevuibjtcftk`）。AK/SK 和 TUI OAuth token 都不能领取。
-支持直接从浏览器扩展复制导入，也支持以下格式：
-
-- 浏览器扩展导出的 JSON 数组（Cookie-Editor、EditThisCookie 等），**直接复制粘贴**
-- Playwright `{ "cookies": [...] }` JSON
-- Netscape `cookies.txt`
-- 完整 cURL 命令（自动提取 `Cookie:` 头）
-- 裸 `Cookie: ...` 头
-
-启用步骤：
-
-1. 浏览器登录 <https://devcloud.cn-north-4.huaweicloud.com/chat/home>，并完成 web 登录：
-
-```bash
-npm run login
-```
-
-2. 从浏览器扩展/DevTools 复制 Cookie 并导入（推荐用命令，自动写入 0600 文件）：
-
-```bash
-npm run signin:import-cookie
-# 粘贴 Cookie-Editor 导出的 JSON、Copy as cURL、或 Cookie 头，然后按 Ctrl-D
-
-# 或者直接从剪贴板读取：
-npm run signin:import-cookie -- --clipboard
-```
-
-也可以手动保存到 `~/.config/opencode/opencode-codearts/web-cookie.txt`，再 `chmod 600`。
-
-3. 手动测试：
-
-```bash
-npm run signin
-# 或
-curl http://127.0.0.1:17228/signin
-```
-
-4. 确认能识别两个活动并返回“已领取/签到成功”后，再启用每日自动签到：
-
-```bash
-npm run signin:enable
-```
-
-`signin:enable` 会检查 `web-auth.json` 与 `web-cookie.txt`，然后安装并启用
-`opencode-codearts-signin.timer`（默认每天 **08:00** 本地时间）。
-
-5. 需要关闭时：
-
-```bash
-npm run signin:disable
-```
-
-```bash
-systemctl --user list-timers opencode-codearts-signin.timer
-journalctl --user -u opencode-codearts-signin -n 50 --no-pager
-```
-
-- 可覆盖 Cookie 路径：`CODEARTS_WEB_COOKIE_FILE=/path/to/cookie`；也可直接
-  `export CODEARTS_WEB_COOKIE='...'`。
-- 可覆盖活动匹配：`CODEARTS_SIGNIN_TITLES='每日签到'`（默认）或
-  `CODEARTS_SIGNIN_CAMPAIGNS=34,40`。
-- Cookie 过期后签到会返回 401/跳登录页，重新执行 `npm run signin:import-cookie` 即可。
-- `web-cookie.txt` 等同于网页登录凭据，务必只放在本机 0600 文件，不要提交到 Git。
 
 ### 并发限制（对齐 deveco 的闸门）
 
@@ -391,6 +301,19 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 - 最终回答只出现在 `reasoning_content` 时回填到 `content`；同时清理
   `<|message_end|>` 控制符。
 
+### 风控与追踪头
+
+代理按 CodeArts CLI 26.11.11 的实际请求补齐并签名以下头，避免上游把代理请求视为匿名客户端：
+
+- 追踪：`x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`
+- 会话：`x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity`
+- 客户端：`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.11`、`x-ot-function: agent-tui`
+- 插件/IDE：`plugin-name`、`plugin-version`、`ide-name`、`ide-version`
+- 请求：`user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`、
+  `x-language: zh-cn`、`x-remote-origin-url`
+
+没有客户端会话 ID 时，代理使用进程级兜底 session，而不是发一个无会话的裸请求。
+
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
@@ -399,10 +322,6 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | `CODEARTS_CLI_SECURITY_TOKEN` | — | 可选，临时 STS 凭据 |
 | `CODEARTS_ENV_FILE` | — | 指定 profile 文件 |
 | `CODEARTS_DISABLE_PROFILE` | — | `1` 关闭 profile 兜底 |
-| `CODEARTS_WEB_COOKIE` | — | 网页签到 Cookie（内联，优先级最高） |
-| `CODEARTS_WEB_COOKIE_FILE` | `~/.config/opencode/opencode-codearts/web-cookie.txt` | 网页签到 Cookie 文件 |
-| `CODEARTS_SIGNIN_TITLES` | `每日签到` | 活动标题匹配（逗号分隔，默认匹配两个每日签到） |
-| `CODEARTS_SIGNIN_CAMPAIGNS` | — | 指定 campaignId（逗号分隔，如 `34,40`） |
 | `CODEARTS_PROXY_PORT` | 17228 | 本地代理端口 |
 | `CODEARTS_MAX_CONCURRENCY` | 3 | 并发 chat 上限 |
 | `CODEARTS_MAX_QUEUE` | 3 | 排队上限；0 = 不排队 |
@@ -423,10 +342,6 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | `400 codearts_context_limit` | 提示词超过模型上下文，缩短后重试 |
 | 端口 17228 被占用 | 若占用者也是本代理会直接复用；否则用 `CODEARTS_PROXY_PORT` 换端口 |
 | 模型列表为空 | 先 `curl 127.0.0.1:17228/models`；无实时列表时用静态 12 个模型兜底 |
-| 签到提示缺少网页 Cookie | 从浏览器导出 `Cookie`，写入 `web-cookie.txt`（0600） |
-| 签到 401 / 跳登录页 | Cookie 已过期，重新导出 |
-| 今日已领取 / 40001 | 已签到，无需处理 |
-| 未找到进行中的每日签到活动 | 活动可能已结束；可用 `CODEARTS_SIGNIN_TITLES` / `CODEARTS_SIGNIN_CAMPAIGNS` 调整 |
 | 想看详细日志 | `export CODEARTS_LOG_LEVEL=debug`，然后重启代理/opencode |
 
 ## 说明与限制
@@ -473,21 +388,8 @@ claude
 The plugin entry (`{ id, server, setup }`) is optional: it only auto-starts the proxy and
 injects the provider. See [DESIGN.md](./DESIGN.md) for the full architecture.
 
-### Daily check-in (opt-in)
-
-Automatic check-in is off by default. After a web login and a browser-cookie import, enable
-the timer explicitly:
-
-```bash
-npm run login
-npm run signin:import-cookie        # paste Cookie-Editor/EditThisCookie JSON, cURL or Cookie
-npm run signin                      # manual test
-npm run signin:enable               # install/enable the daily timer (08:00)
-npm run signin:disable              # opt out
-```
-
-The two daily campaigns ("每日签到领100积分" and "Skill创新赛每日签到礼") are matched by
-title; ended campaigns are reported as expired and skipped without failing the timer.
+> The optional daily check-in (cookie import + systemd timer) was removed in the reissued
+> 1.1.0: the web session expires too often to run unattended.
 
 ## License
 

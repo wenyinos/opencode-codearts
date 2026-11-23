@@ -36,7 +36,6 @@ case "$(uname -s)" in
     systemctl --user enable --now opencode-codearts
     echo "installed and started: $UNIT"
     echo "logs: journalctl --user -u opencode-codearts -f"
-    echo "daily check-in is opt-in: run 'npm run login', 'npm run signin:import-cookie', then 'npm run signin:enable'"
     ;;
   Darwin)
     PLIST_DIR="$HOME/Library/LaunchAgents"
@@ -55,7 +54,6 @@ case "$(uname -s)" in
 
     echo "installed and started: $PLIST"
     echo "logs: tail -f $LOG_DIR/opencode-codearts.log"
-    echo "daily check-in is opt-in: run 'npm run login', 'npm run signin:import-cookie', then 'npm run signin:enable'"
     ;;
   *)
     echo "unsupported platform: $(uname -s)" >&2

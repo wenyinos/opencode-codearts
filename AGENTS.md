@@ -41,10 +41,9 @@
 | `src/vision-routing.ts` | 文本模型遇新图片的视觉回落 |
 | `src/http.ts` / `src/network-error.ts` | 直连 fetch、DNS/连接/超时/TLS 错误提示 |
 | `src/oauth.ts` / `src/web-auth.ts` | TUI OAuth、web 凭据保存和刷新 |
-| `src/signin.ts` / `src/import-cookie.ts` | 每日签到和浏览器 Cookie 导入 |
 | `src/plugin.ts` / `src/index.ts` | opencode V1/V2 插件入口 |
 | `src/proxy-cli.ts` / `src/daemon.ts` | 独立代理和可选 supervisor |
-| `scripts/` | systemd、launchd、Windows 自启动和签到脚本 |
+| `scripts/` | systemd、launchd、Windows 自启动脚本 |
 | `src/*.test.ts` | Vitest 单元与代理集成测试 |
 
 ## 4. 常用命令
@@ -52,24 +51,21 @@
 ```bash
 npm install
 npm run typecheck     # tsc --noEmit
-npm test              # Vitest，当前 124 项
+npm test              # Vitest，当前 106 项
 npm run build         # 更新 dist/
 npm run start:proxy   # 直接启动代理
 npm start             # 可选 supervisor
 npm run print-provider
 ```
 
-网页登录与签到：
+网页登录：
 
 ```bash
 npm run login
-npm run signin:import-cookie
-npm run signin
-npm run signin:enable
-npm run signin:disable
 ```
 
-`signin:enable` 是可选项，不要因为安装代理或运行 `install-autostart.sh` 就自动启用。
+> 早期的可选每日签到（Cookie 导入 + systemd timer）已在 1.1.0 重发版移除：网页登录态
+> 频繁失效，无法可靠自动执行。不要再把签到相关脚本、路由或 npm scripts 加回来。
 
 ## 5. 凭据与运行环境
 
@@ -84,7 +80,6 @@ npm run signin:disable
 
 - AK/SK 不落盘。
 - web 登录凭据：`~/.config/opencode/opencode-codearts/web-auth.json`（0600）。
-- 签到 Cookie：`~/.config/opencode/opencode-codearts/web-cookie.txt`（0600）。
 - `CODEARTS_DISABLE_PROFILE=1` 只关闭 profile 解析，不影响 web 登录兜底。
 
 常用环境变量：
@@ -98,8 +93,6 @@ npm run signin:disable
 | `CODEARTS_ANTHROPIC_MODEL` | `glm-5.3-flash` | Anthropic 模型映射 |
 | `CODEARTS_VISION_MODEL` | `glm-5.3-flash` | 视觉回落模型 |
 | `CODEARTS_LOG_LEVEL` | `info` | `debug` 查看详细日志 |
-| `CODEARTS_SIGNIN_TITLES` | `每日签到` | 签到活动标题匹配 |
-| `CODEARTS_SIGNIN_CAMPAIGNS` | — | 指定 campaignId，如 `34,40` |
 
 ## 6. 本地 API 表面
 
@@ -110,7 +103,6 @@ npm run signin:disable
 - `GET /usage`：积分用量。
 - `GET /status`、`GET /health`：状态和存活检查。
 - `GET /login`、`GET /logout`：TUI web 登录与清除 web 凭据。
-- `GET /signin`：手动触发每日签到。
 
 ## 7. OpenAI 请求处理顺序
 
@@ -128,6 +120,12 @@ npm run signin:disable
    - opencode 没有合适请求头时，使用请求体 `prompt_cache_key`；
    - 最终映射为上游 `x-ot-session-id` 和 `user-session-id`，并通过 `extraHeaders` 纳入签名。
 9. 进入并发闸门，再签名并直连上游。
+10. 补齐 CodeArts CLI 风控/追踪头：`x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`、
+    `x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity`、
+    `x-ot-function: agent-tui`、`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.11`、
+    `plugin-name/version`、`ide-name/version`、`x-language`、`x-remote-origin-url`、
+    `user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`。
+    这些头必须参与签名；客户端没有 session 时使用进程级兜底 session。
 
 ## 8. 响应与 SSE 规则（高风险区域）
 
@@ -179,17 +177,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - 快照位置：`~/.config/opencode/opencode-codearts/models.json`。
 - `ModelInfo.upstream` 不得丢弃原始字段；`limit.output` 同时用于 token 截断。
 
-## 11. 每日签到
-
-- 默认关闭，只有用户完成 web 登录并导入浏览器 Cookie 后，才允许 `signin:enable`。
-- 活动 34「每日签到领100积分」和活动 40「Skill创新赛每日签到礼」。
-- 使用 welfare `/chat/PromptCenterService/v1/ops/delivery` 和 `/ops/claim`，不要误用 `benefit/claim`。
-- 活动结束标记 expired 并跳过，不让 timer 失败。
-- TUI OAuth 不含网页 user token；签到需要浏览器 Cookie。
-- cftk 优先取 `devclouddevuibjtcftk`，同时作为 Cookie 和 `cftk` 头；不要用 `console_cftk`。
-- Cookie 导入支持扩展 JSON、Playwright、Netscape、cURL、裸 Cookie 头。
-
-## 12. 插件与自启动
+## 11. 插件与自启动
 
 - V1 导出 `{ id, server }`，V2 导出 `{ id, setup }`。
 - V2 provider 包使用 `@opencode/ai/providers/openai-compatible`；V1/独立 provider 配置保留 `@ai-sdk/openai-compatible`。
@@ -198,7 +186,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - opencode 后台 service 的停用状态在 `~/.config/opencode/service.json`，不要误改 `opencode.json`。
 - 不留下独立插件 daemon。
 
-## 13. 开发流程
+## 12. 开发流程
 
 1. 先读 `package.json`、README、DESIGN 和相关实现，确认当前行为。
 2. 修 bug 先复现并写回归测试；新增兼容行为先写失败用例。
@@ -222,9 +210,9 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 7. 提交前检查 `git diff --check`、`git status` 和敏感信息。
 - 不擅自提交、push、移动 tag 或创建 release；这些操作只在用户明确要求时执行。
 
-## 14. 测试与实测要求
+## 13. 测试与实测要求
 
-当前为 **124 项 Vitest 测试，13 个测试文件**。
+当前为 **106 项 Vitest 测试，12 个测试文件**。
 
 除单元测试外，涉及客户端兼容时至少做以下实测：
 
@@ -238,7 +226,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 实测结果要如实报告；provider 级测试与真实 UI 操作不要混为一谈。
 
-## 15. 文档与发布
+## 14. 文档与发布
 
 - 行为变化同步更新 `README.md` 和 `DESIGN.md`，测试数量保持准确。
 - 常规发布流程：文档 → typecheck/test/build → commit → annotated tag → push main/tag → GitHub release。
@@ -246,7 +234,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - 当前 `v1.1.0` 指向 `67ec72a`，GitHub Release 说明已包含 reasoning、finish、token 和 session 修复。
 - 修改仓库 Description/Topics 使用 `gh repo edit`，也属于外部写入，需用户明确要求。
 
-## 16. 已知坑速查
+## 15. 已知坑速查
 
 | 现象 | 优先检查 |
 | --- | --- |
@@ -260,9 +248,9 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 | 华为 TLS/连接异常 | 检查残留系统/KDE 代理，项目要求直连 |
 | Anthropic 流解析失败 | 检查紧凑 `data:` 和 Anthropic 转换层，不要只改 OpenAI 路径 |
 
-## 17. 完成定义（DoD）
+## 16. 完成定义（DoD）
 
-- 回归测试覆盖问题，124 项或更新后的全部测试通过。
+- 回归测试覆盖问题，106 项或更新后的全部测试通过。
 - typecheck/build 通过，`dist/` 同步。
 - 文档、测试计数、故障排查说明同步。
 - 服务已重启并完成必要的真实请求验证。
