@@ -5,6 +5,9 @@ export interface UsageWindow {
     display: string;
     /** Credits consumed. */
     amount: number;
+    /** Credits still available. */
+    remaining: number;
+    display_remaining: string;
     limit: number;
     unit: "credits";
 }

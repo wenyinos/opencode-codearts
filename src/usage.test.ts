@@ -47,6 +47,8 @@ describe("usageFromStatistics", () => {
     expect(report.windows[0]).toMatchObject({
       display: "138 / 1.5万",
       amount: 137.87,
+      remaining: 14462.13,
+      display_remaining: "1.4万 / 1.5万",
       limit: 14600,
       unit: "credits",
     })
@@ -63,7 +65,29 @@ describe("usageFromStatistics", () => {
         },
       ],
     })
-    expect(report.windows[0]).toMatchObject({ amount: 60, used: 60 })
+    expect(report.windows[0]).toMatchObject({
+      amount: 60,
+      used: 60,
+      remaining: 40,
+      display_remaining: "40 / 100",
+    })
+  })
+
+  it("derives remaining when the remain field is absent", () => {
+    const report = usageFromStatistics({
+      metrics: [
+        {
+          name: "usageTotalPackageCredit",
+          package_credit_amount: 100,
+          package_credit_used: 30,
+        },
+      ],
+    })
+    expect(report.windows[0]).toMatchObject({
+      amount: 30,
+      remaining: 70,
+      display_remaining: "70 / 100",
+    })
   })
 
   it("reports an empty account", () => {

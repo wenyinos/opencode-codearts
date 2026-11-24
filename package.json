@@ -1,6 +1,6 @@
 {
   "name": "opencode-codearts",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "OpenCode provider plugin for Huawei Cloud CodeArts (码道) models, authenticated with CODEARTS_CLI_AK / CODEARTS_CLI_SK environment variables.",
   "type": "module",
   "license": "MIT",

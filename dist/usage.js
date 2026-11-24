@@ -74,8 +74,14 @@ export function usageFromStatistics(raw) {
         if (metric.show === false)
             continue;
         const limit = num(metric.package_credit_amount);
-        const remain = num(metric.package_credit_remain);
+        const remainRaw = metric.package_credit_remain;
+        const hasRemain = (typeof remainRaw === "number" && Number.isFinite(remainRaw)) ||
+            (typeof remainRaw === "string" &&
+                remainRaw.trim() !== "" &&
+                Number.isFinite(Number(remainRaw)));
+        const remain = hasRemain ? Math.max(0, num(remainRaw)) : 0;
         const used = num(metric.package_credit_used) || Math.max(0, limit - remain);
+        const remaining = hasRemain ? remain : Math.max(0, limit - used);
         if (limit <= 0 && used <= 0)
             continue;
         windows.push({
@@ -83,6 +89,8 @@ export function usageFromStatistics(raw) {
             used: clamp(limit > 0 ? (used / limit) * 100 : 0),
             display: `${formatCredit(used)} / ${formatCredit(limit)}`,
             amount: used,
+            remaining,
+            display_remaining: `${formatCredit(remaining)} / ${formatCredit(limit)}`,
             limit,
             unit: "credits",
         });

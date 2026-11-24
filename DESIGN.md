@@ -15,7 +15,7 @@
 **非目标**
 
 - 不保存 AK/SK 到磁盘；可选的 web 登录凭据保存在 `web-auth.json`（0600）。
-- 早期的可选每日签到已在 1.1.0 重发版移除：网页登录态频繁失效，无法可靠自动执行。
+- 早期的可选每日签到已在 1.1.1移除：网页登录态频繁失效，无法可靠自动执行。
 - 不实现 DevEco 专有的 `exitSessionQueue`、真实姓名/区域门禁。
 
 ## 二、总体架构
@@ -128,7 +128,7 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 | `POST /anthropic/v1/messages` | Anthropic Messages：转换 → 签名 → 转发；流式事件转换 |
 | `GET /v2/models`（或 `/models`） | 实时拉 `/v1/model/builtin`，失败回退快照/静态目录；每个模型带全部上游字段 |
 | `GET /models/<id>` 等 | 单个模型的完整记录（含 `upstream` 原始对象） |
-| `GET /usage` | 签名 GET `/snap-manager/v1/statistics/plugin`，映射为积分窗口 |
+| `GET /usage` | 签名 GET `/snap-manager/v1/statistics/plugin`，映射为积分窗口（含 `remaining` 剩余额度） |
 | `GET /login` | 启动 TUI 网页登录，返回 `login_url`；回调后保存 `web-auth.json` |
 | `GET /logout` | 清除网页登录态（不影响 AK/SK） |
 | `GET /status` | `{ configured, ak, source, source_file, missing, base_url, anthropic_base_url, models, web_auth }` |
@@ -286,7 +286,7 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（106 项）
+└── *.test.ts             vitest（107 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
@@ -323,12 +323,12 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，106 项）：
+`npm test`（vitest，107 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。
 - 模型：builtin 解析、VL/禁用过滤、去重、快照读写、旧快照补全、全部上游字段保留、用户配置合并。
-- 用量：总积分优先、空桶丢弃、`limit - remain` 兜底、业务错误码。
+- 用量：总积分优先、空桶丢弃、`limit - remain` 兜底、剩余额度（`remaining`）映射、业务错误码。
 - 闸门：上限、排队、队列满、排队取消、冷却。
 - 归一化：developer role、max_completion_tokens、tool_choice、reasoning_effort。
 - 视觉回落：新图改路由、历史图剥离、视觉/未知模型不处理。
@@ -351,7 +351,7 @@ scripts/
   `upstream` 等全部字段；
 - OpenAI chat（`stream:false` / `stream:true`）→ 200，SSE 正常；
 - tool call → `finish_reason: "tool_calls"`，参数正确；
-- `GET /usage` → 体验版积分窗口；
+- `GET /usage` → 体验版积分窗口（`amount` 已用、`remaining` 剩余）；
 - Anthropic 非流/流式/thinking → 转换正常；
 - `opencode models --standalone` → `codearts/<model>` 出现；
 - 仅 provider 配置（无 plugin 数组）→ `codearts/<model>` 出现；
@@ -362,4 +362,4 @@ scripts/
 - TUI 网页登录（`CodeArts_Tui` + PKCE + DPoP）→ 保存 `web-auth.json`；
 - 清空 AK/SK/profile 后，`/status` 显示 `source: "web"`，`/models` 实时列表正常；
 - 早期可选每日签到（Cookie + timer）实测可领取两个活动，但网页登录态次日即失效，
-  无法可靠自动执行，已在 1.1.0 重发版移除。
+  无法可靠自动执行，已在 1.1.1移除。

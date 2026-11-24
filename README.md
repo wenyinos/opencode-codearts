@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-106%20passing-success)
+![tests](https://img.shields.io/badge/tests-107%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -74,7 +74,7 @@ codearts models
 包含临时 AK/SK/ST、refresh token 和 DPoP 私钥，可自动续期。
 
 > 早期版本提供过可选的每日签到（Cookie 导入 + systemd timer）；因网页登录态频繁失效、
-> 无法可靠自动执行，该功能已在 1.1.0 重发版中移除。
+> 无法可靠自动执行，该功能已在 1.1.1中移除。
 
 ## 用法一：独立本地代理（推荐，不需要插件列表）
 
@@ -260,11 +260,20 @@ claude
 | `POST /anthropic/v1/messages` | Anthropic Messages 兼容（流式/非流式） |
 | `GET /models` | OpenAI 风格模型列表 + 全部上游字段（实时失败时回退缓存） |
 | `GET /models/<id>` | 单个模型的完整记录（含 `upstream` 原始对象） |
-| `GET /usage` | 积分套餐用量 |
+| `GET /usage` | 积分套餐用量（含 `remaining` / `display_remaining` 剩余额度） |
 | `GET /login` | 启动 CodeArts TUI 网页登录，返回 `login_url` |
 | `GET /logout` | 清除网页登录态（不影响 AK/SK） |
 | `GET /status` | `{ configured, ak, source, web_auth, ... }`，不泄露 SK |
 | `GET /health` | 存活检查 |
+
+查询剩余额度：
+
+```bash
+curl -s http://127.0.0.1:17228/usage \
+  | jq '.windows[] | {name, used: .amount, remaining, display_remaining}'
+```
+
+`display` 保留“已用 / 总额”语义；`remaining` 是原始 `package_credit_remain`，缺失时用 `limit - used` 兜底。
 
 ### 并发限制（对齐 deveco 的闸门）
 
@@ -337,8 +346,8 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | `401 codearts_missing_credentials` | 设置 `CODEARTS_CLI_AK/SK`，或确认 shell profile 中有这两个变量 |
 | `429 codearts_queue_full` | 并发/排队已满；稍后重试，或调大 `CODEARTS_MAX_QUEUE` |
 | `429 codearts_concurrency_limit` | 账号的 3 个会话被其他客户端占用；确认客户端带 `x-session-id` / `prompt_cache_key` 以复用会话；仍 429 时关闭其他会话后重试 |
-| `opencode` 报 `stream ended without finish_reason` | 1.1.0 重发版已在上游缺 finish 时补 `stop` / `tool_calls`；更新代理并重启 |
-| `InferHub.001001005.400` | `max_tokens` 超出模型输出上限；1.1.0 重发版会按模型 `limit.output` 自动截断 |
+| `opencode` 报 `stream ended without finish_reason` | 1.1.1已在上游缺 finish 时补 `stop` / `tool_calls`；更新代理并重启 |
+| `InferHub.001001005.400` | `max_tokens` 超出模型输出上限；1.1.1会按模型 `limit.output` 自动截断 |
 | `400 codearts_context_limit` | 提示词超过模型上下文，缩短后重试 |
 | 端口 17228 被占用 | 若占用者也是本代理会直接复用；否则用 `CODEARTS_PROXY_PORT` 换端口 |
 | 模型列表为空 | 先 `curl 127.0.0.1:17228/models`；无实时列表时用静态 12 个模型兜底 |
@@ -348,9 +357,14 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 
 - 区域固定华为云 `cn-north-4`（与码道 CLI 一致）。
 - AK/SK 路径**不需要** `maas_type: benefit` 头；带上反而会被网关拒绝（`APIG.0101`）。
-- 用量是尽力而为：读取 `snap-manager/v1/statistics/plugin`，通过 `GET /usage` 查看。
+- 用量是尽力而为：读取 `snap-manager/v1/statistics/plugin`，通过 `GET /usage` 查看（含剩余额度）。
 - 运行时代码只依赖 Node/Bun 内置的 `fetch` 与 WebCrypto；`@opencode-ai/plugin` 仅提供类型。
 - 插件层不是必需的；独立代理 + `print-provider` 即可完成全部功能。
+
+## 版本记录
+
+- **1.1.1**：`GET /usage` 新增 `remaining` / `display_remaining` 剩余额度字段（保留 `display` 兼容）；文档与测试更新至 107 项。
+- **1.1.0**：reasoning-only 回填、`<|message_end|>` 清理、缺失 `finish_reason` 补全、`max_tokens` 截断、会话复用、CodeArts CLI 风控头对齐；签到功能已移除。
 
 ## English
 
@@ -362,7 +376,8 @@ Anthropic (`/anthropic/v1/messages`) APIs on `127.0.0.1:17228` (override with
 `CODEARTS_PROXY_PORT`). Connections are direct; the proxy never reads OS proxy settings
 and pins `NO_PROXY=*` when a proxy environment is present.
 
-Compatibility fixes in the reissued 1.1.0: reasoning-only final answers are promoted to
+`GET /usage` now includes `remaining` and `display_remaining` for each credit bucket.
+Compatibility fixes in 1.1.1: reasoning-only final answers are promoted to
 `content`, `<|message_end|>` is stripped, a missing `finish_reason` is synthesized, and
 `max_tokens` is capped to the model's declared output limit. ZCode `x-session-id` and
 opencode `prompt_cache_key` are forwarded as `x-ot-session-id` / `user-session-id`, so
@@ -389,7 +404,7 @@ The plugin entry (`{ id, server, setup }`) is optional: it only auto-starts the 
 injects the provider. See [DESIGN.md](./DESIGN.md) for the full architecture.
 
 > The optional daily check-in (cookie import + systemd timer) was removed in the reissued
-> 1.1.0: the web session expires too often to run unattended.
+> 1.1.1: the web session expires too often to run unattended.
 
 ## License
 

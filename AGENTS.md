@@ -13,7 +13,7 @@
 - **所有请求直连华为云**，不使用系统代理或第三方转发。
 - opencode 自己的后台 service 与本代理是两件事：可以独立停用 opencode daemon，同时保留本代理的 systemd 服务。
 
-当前版本：`1.1.0`。最近一次重发提交：`67ec72a`。
+当前版本：`1.1.1`。最近一次发布：`v1.1.1`。
 
 ## 2. 技术栈与硬约束
 
@@ -51,7 +51,7 @@
 ```bash
 npm install
 npm run typecheck     # tsc --noEmit
-npm test              # Vitest，当前 106 项
+npm test              # Vitest，当前 107 项
 npm run build         # 更新 dist/
 npm run start:proxy   # 直接启动代理
 npm start             # 可选 supervisor
@@ -64,7 +64,7 @@ npm run print-provider
 npm run login
 ```
 
-> 早期的可选每日签到（Cookie 导入 + systemd timer）已在 1.1.0 重发版移除：网页登录态
+> 早期的可选每日签到（Cookie 导入 + systemd timer）已在 1.1.1 移除：网页登录态
 > 频繁失效，无法可靠自动执行。不要再把签到相关脚本、路由或 npm scripts 加回来。
 
 ## 5. 凭据与运行环境
@@ -100,7 +100,7 @@ npm run login
 - 同时兼容裸路径、`/v1/chat/completions`、旧 `/api/v2/chat/completions`，客户端迁移时不要再次误删这些别名。
 - `POST /anthropic/v1/messages`：Anthropic Messages。
 - `GET /models`、`/v2/models`、`/models/<id>`：模型目录和单个模型完整元数据。
-- `GET /usage`：积分用量。
+- `GET /usage`：积分用量，含 `amount`（已用）与 `remaining`（剩余）。
 - `GET /status`、`GET /health`：状态和存活检查。
 - `GET /login`、`GET /logout`：TUI web 登录与清除 web 凭据。
 
@@ -212,7 +212,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 ## 13. 测试与实测要求
 
-当前为 **106 项 Vitest 测试，12 个测试文件**。
+当前为 **107 项 Vitest 测试，12 个测试文件**。
 
 除单元测试外，涉及客户端兼容时至少做以下实测：
 
@@ -231,7 +231,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - 行为变化同步更新 `README.md` 和 `DESIGN.md`，测试数量保持准确。
 - 常规发布流程：文档 → typecheck/test/build → commit → annotated tag → push main/tag → GitHub release。
 - 重发同一版本只在用户明确要求时进行；不要擅自 force push 或移动 tag。
-- 当前 `v1.1.0` 指向 `67ec72a`，GitHub Release 说明已包含 reasoning、finish、token 和 session 修复。
+- 当前 `v1.1.1` 为 `/usage` 剩余额度版本；1.1.0 已包含 reasoning、finish、token、session 和 CLI 风控头修复。
 - 修改仓库 Description/Topics 使用 `gh repo edit`，也属于外部写入，需用户明确要求。
 
 ## 15. 已知坑速查
@@ -250,7 +250,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 ## 16. 完成定义（DoD）
 
-- 回归测试覆盖问题，106 项或更新后的全部测试通过。
+- 回归测试覆盖问题，107 项或更新后的全部测试通过。
 - typecheck/build 通过，`dist/` 同步。
 - 文档、测试计数、故障排查说明同步。
 - 服务已重启并完成必要的真实请求验证。
