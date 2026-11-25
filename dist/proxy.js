@@ -27,6 +27,7 @@ import { catalogFromRemote, fetchRemoteModels, loadPersistedModels, persistModel
 import { describeNetworkError } from "./network-error.js";
 import { normalizeOpenAIChatBody } from "./normalize.js";
 import { signRequestHuawei } from "./signing.js";
+import { decryptResponseStream, encryptChatBody, isEncryptedResponse, negotiateSessionKey, sessionKeyUsable, transportEncryptEnabled, } from "./transport-security.js";
 import { clearWebAuth, currentWebCredential, startWebLogin, webAuthStatus, } from "./web-auth.js";
 import { usageFromStatistics } from "./usage.js";
 import { applyVisionRouting } from "./vision-routing.js";
@@ -252,6 +253,8 @@ export class CodeArtsProxy {
     env;
     gate;
     server = null;
+    /** SM4-GCM session key, only used when CODEARTS_TRANSPORT_ENCRYPT is on. */
+    transportKey = null;
     constructor(options = {}) {
         this.port = options.port ?? proxyPort();
         this.hostname = options.hostname ?? PROXY_HOST;
@@ -499,6 +502,28 @@ export class CodeArtsProxy {
     // -------------------------------------------------------------------------
     // Chat forwarding
     // -------------------------------------------------------------------------
+    /**
+     * Cached SM4-GCM session key. Returns null (and logs) when negotiation fails
+     * so callers silently fall back to a signed plaintext request.
+     */
+    async transportKeyFor(credentials) {
+        if (sessionKeyUsable(this.transportKey))
+            return this.transportKey;
+        try {
+            const baseUrl = new URL(this.upstreamBase).origin;
+            const key = await negotiateSessionKey(credentials, this.fetcher, baseUrl);
+            this.transportKey = key;
+            log.info("CodeArts transport key negotiated", { keyId: key.keyId });
+            return key;
+        }
+        catch (err) {
+            this.transportKey = null;
+            log.warn("CodeArts key exchange failed; using plaintext", {
+                error: err instanceof Error ? err.message : String(err),
+            });
+            return null;
+        }
+    }
     async forwardChat(req, res) {
         const credentials = this.requireCredentials(res);
         if (!credentials)
@@ -548,41 +573,117 @@ export class CodeArtsProxy {
             armIdle();
             // Sign after admission: a long queue wait must not age the signature.
             const sessionId = clientSessionId(req) || prepared.sessionId || FALLBACK_SESSION_ID;
-            const signed = await signRequestHuawei({
-                ak: credentials.ak,
-                sk: credentials.sk,
-                securityToken: credentials.securityToken,
-                method: "POST",
-                url: target,
-                body,
-                extraHeaders: {
-                    "content-type": "application/json",
-                    ...codeartsClientHeaders(sessionId, prepared.model),
-                },
-            });
-            const headers = new Headers(signed.headers);
-            const accept = req.headers.accept;
-            if (typeof accept === "string" && accept)
-                headers.set("accept", accept);
-            headers.set("user-agent", `opencode/${CODEARTS_CLIENT_VERSION}`);
+            const clientHeaders = codeartsClientHeaders(sessionId, prepared.model);
+            const pathname = new URL(target).pathname;
+            // Encrypted requests sign only the base headers, exactly like the CLI;
+            // tracing and X-Encrypt headers are attached after signing.
+            const send = async (encryptWith) => {
+                let payload = body;
+                let signedHeaders;
+                let encryptHeaders = {};
+                if (encryptWith) {
+                    const encrypted = encryptChatBody(new TextDecoder().decode(body), encryptWith, "POST", pathname);
+                    payload = encrypted.body;
+                    encryptHeaders = encrypted.headers;
+                    signedHeaders = { "content-type": "application/octet-stream" };
+                }
+                else {
+                    signedHeaders = { "content-type": "application/json", ...clientHeaders };
+                }
+                const signed = await signRequestHuawei({
+                    ak: credentials.ak,
+                    sk: credentials.sk,
+                    securityToken: credentials.securityToken,
+                    method: "POST",
+                    url: target,
+                    body: typeof payload === "string" ? new TextEncoder().encode(payload) : payload,
+                    extraHeaders: signedHeaders,
+                });
+                const headers = new Headers(signed.headers);
+                if (encryptWith) {
+                    for (const [key, value] of Object.entries(clientHeaders))
+                        headers.set(key, value);
+                    for (const [key, value] of Object.entries(encryptHeaders))
+                        headers.set(key, value);
+                }
+                const accept = req.headers.accept;
+                if (typeof accept === "string" && accept)
+                    headers.set("accept", accept);
+                headers.set("user-agent", `opencode/${CODEARTS_CLIENT_VERSION}`);
+                return this.fetcher(target, { method: "POST", headers, body: payload, signal });
+            };
+            let encryptedKey = null;
+            if (transportEncryptEnabled(this.env)) {
+                encryptedKey = await this.transportKeyFor(credentials);
+            }
             let upstream;
             try {
-                upstream = await this.fetcher(target, { method: "POST", headers, body, signal });
+                upstream = await send(encryptedKey);
             }
             catch (err) {
                 if (clientGone.signal.aborted)
                     return;
-                if (!res.headersSent) {
-                    const hint = describeNetworkError(err, target);
-                    this.json(res, 502, {
-                        error: {
-                            message: hint ??
-                                `CodeArts upstream request failed: ${err instanceof Error ? err.message : String(err)}`,
-                            type: "upstream_error",
-                        },
+                if (encryptedKey) {
+                    log.warn("encrypted request failed; retrying plaintext", {
+                        error: err instanceof Error ? err.message : String(err),
+                    });
+                    this.transportKey = null;
+                    encryptedKey = null;
+                    try {
+                        upstream = await send(null);
+                    }
+                    catch (retryErr) {
+                        if (!res.headersSent) {
+                            const hint = describeNetworkError(retryErr, target);
+                            this.json(res, 502, {
+                                error: {
+                                    message: hint ??
+                                        `CodeArts upstream request failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+                                    type: "upstream_error",
+                                },
+                            });
+                        }
+                        return;
+                    }
+                }
+                else {
+                    if (!res.headersSent) {
+                        const hint = describeNetworkError(err, target);
+                        this.json(res, 502, {
+                            error: {
+                                message: hint ??
+                                    `CodeArts upstream request failed: ${err instanceof Error ? err.message : String(err)}`,
+                                type: "upstream_error",
+                            },
+                        });
+                    }
+                    return;
+                }
+            }
+            if (encryptedKey && !upstream.ok) {
+                const text = await upstream.text();
+                const rejected = upstream.status === 400 ||
+                    upstream.status === 404 ||
+                    upstream.status === 405 ||
+                    upstream.status === 415;
+                if (text.includes("ENCRYPT_KEY_EXPIRED") || rejected) {
+                    log.warn("encrypted request rejected; retrying plaintext", {
+                        status: upstream.status,
+                    });
+                    this.transportKey = null;
+                    encryptedKey = null;
+                    upstream = await send(null);
+                }
+                else {
+                    upstream = new Response(text, {
+                        status: upstream.status,
+                        statusText: upstream.statusText,
+                        headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
                     });
                 }
-                return;
+            }
+            if (encryptedKey && isEncryptedResponse(upstream)) {
+                upstream = decryptResponseStream(upstream, encryptedKey);
             }
             if (!upstream.ok) {
                 const text = await upstream.text();

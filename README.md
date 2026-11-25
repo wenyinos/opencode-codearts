@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-108%20passing-success)
+![tests](https://img.shields.io/badge/tests-116%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -325,6 +325,21 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 
 没有客户端会话 ID 时，代理使用进程级兜底 session，而不是发一个无会话的裸请求。
 
+### 传输加密（可选）
+
+CLI 26.11.21 对 `/api/v2/chat/completions` 使用 P-256 密钥交换 + SM4-GCM 传输加密。
+代理实现了同一套协议，由 `CODEARTS_TRANSPORT_ENCRYPT=1` 开启（**默认关闭**）：
+
+1. `POST /api/v1/security/key-exchange` 协商会话密钥（ECDH P-256 → SHA-256 取前 16 字节）。
+2. 请求体 SM4-GCM 加密后以 **base64 文本**发送，AAD 为 `METHOD|path|timestamp`，
+   头为 `x-encrypt-algo` / `key-id` / `iv` / `tag` / `ts`；签名只覆盖基础头（与 CLI 一致）。
+3. 响应带 `x-encrypt-algo: sm4-gcm` 时按帧解密，帧格式 `base64(iv):base64(tag):base64(ciphertext)`，
+   AAD 为 `keyId|帧序号`。
+4. 密钥缓存到到期前 5 分钟；协商失败、加密请求被拒或 `ENCRYPT_KEY_EXPIRED` 时
+   自动回退明文重试，不影响可用性。
+
+实现依赖 `sm-crypto-v2`（纯 JS，Node 自带 OpenSSL 不含 SM4）。Anthropic 路径暂保持明文。
+
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
@@ -339,6 +354,7 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | `CODEARTS_QUEUE_COOLDOWN_SEC` | 1 | 排队请求冷却秒数 |
 | `CODEARTS_ANTHROPIC_MODEL` | `glm-5.3-flash` | Claude 模型名映射到的 CodeArts 模型 |
 | `CODEARTS_VISION_MODEL` | `glm-5.3-flash` | 文本模型遇图时的视觉回落模型 |
+| `CODEARTS_TRANSPORT_ENCRYPT` | — | `1` 开启 SM4-GCM 传输加密（默认明文，失败自动回退） |
 | `CODEARTS_LOG_LEVEL` | `info` | `debug` 看详细日志 |
 
 ## 故障排查
@@ -351,6 +367,8 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | `opencode` 报 `stream ended without finish_reason` | 1.1.1已在上游缺 finish 时补 `stop` / `tool_calls`；更新代理并重启 |
 | `InferHub.001001005.400` | `max_tokens` 超出模型输出上限；1.1.1会按模型 `limit.output` 自动截断 |
 | `ModelArts.81101` / `81114`（`speed` 模型） | 智速模式为上游共享配额（常见 4 次/秒、100 次/分），CLI 同样会触发；稍后重试或改用具体模型 |
+| `ENCRYPT_DECRYPT_FAILED` | 加密请求体必须是 base64 文本；检查是否只发了原始二进制 |
+| `ENCRYPT_REPLAY_DETECTED` | 同一 `keyId` + 同一密文被重复发送；每次请求必须生成新 iv/timestamp |
 | `400 codearts_context_limit` | 提示词超过模型上下文，缩短后重试 |
 | 端口 17228 被占用 | 若占用者也是本代理会直接复用；否则用 `CODEARTS_PROXY_PORT` 换端口 |
 | 模型列表为空 | 先 `curl 127.0.0.1:17228/models`；无实时列表时用静态 12 个模型兜底 |
@@ -361,15 +379,17 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 - 区域固定华为云 `cn-north-4`（与码道 CLI 一致）。
 - AK/SK 路径**不需要** `maas_type: benefit` 头；带上反而会被网关拒绝（`APIG.0101`）。
 - 用量是尽力而为：读取 `snap-manager/v1/statistics/plugin`，通过 `GET /usage` 查看（含剩余额度）。
-- 运行时代码只依赖 Node/Bun 内置的 `fetch` 与 WebCrypto；`@opencode-ai/plugin` 仅提供类型。
+- 运行时只额外依赖 `sm-crypto-v2`（纯 JS 国密库，用于 SM4-GCM）；其余能力使用 Node
+  内置 `fetch` 与 WebCrypto，`@opencode-ai/plugin` 仅提供类型。
 - 插件层不是必需的；独立代理 + `print-provider` 即可完成全部功能。
-- CLI 26.11.21 起对 `/api/v2/chat/completions` 默认启用 SM2/SM4-GCM 传输加密
-  （`X-Encrypt-Capable: sm4-gcm`，失败自动回退明文）。代理保持签名明文请求；实测上游
-  仍接受明文并正常返回（`/models`、`/usage`、OpenAI 与 Anthropic 对话均通过）。若未来
-  上游强制加密，需要为代理补充国密实现。
+- 传输加密为可选特性（`CODEARTS_TRANSPORT_ENCRYPT=1`）：默认明文，上游目前仍接受签名
+  明文；加密失败会自动回退明文。CLI 的 `X-Encrypt-Capable` 声明只在代理主动加密时使用。
 
 ## 版本记录
 
+- **1.2.0**：新增可选 SM4-GCM 传输加密（`CODEARTS_TRANSPORT_ENCRYPT=1`）：P-256 密钥交换、
+  请求 base64 密文 + 重新签名、SSE 逐帧解密、密钥缓存与明文自动回退；新增 `sm-crypto-v2`
+  运行时依赖。实测真实上游加密请求与加密响应解密通过。测试更新至 116 项。
 - **1.1.2**：对齐 CodeArts CLI 26.11.21 协议：客户端版本升级到 `26.11.21`，新增签名的
   `client-ip` 头，`model-name` 按 CLI 规则做百分号编码（修复中文模型名），并补充模型目录
   `Agent-Type: PromptCenter` 回归测试。文档记录 CLI 的 SM2/SM4 传输加密现状与 `speed`
@@ -388,12 +408,14 @@ Anthropic (`/anthropic/v1/messages`) APIs on `127.0.0.1:17228` (override with
 and pins `NO_PROXY=*` when a proxy environment is present.
 
 `GET /usage` now includes `remaining` and `display_remaining` for each credit bucket.
-1.1.2 aligns the risk-control headers with CodeArts CLI 26.11.21: the signed
-`client-ip` header is added and `model-name` is percent-encoded (non-ASCII names such as
-智速模式 would otherwise be rejected by fetch). The CLI now encrypts chat traffic with
-SM2/SM4-GCM by default; the proxy keeps signed plaintext requests, which the gateway
-still accepts. Compatibility fixes in 1.1.1: reasoning-only final answers are promoted to
-`content`, `<|message_end|>` is stripped, a missing `finish_reason` is synthesized, and
+1.2.0 adds optional SM4-GCM transport encryption (`CODEARTS_TRANSPORT_ENCRYPT=1`): a
+P-256 key exchange, base64-encoded encrypted request bodies with re-signed headers,
+per-frame SSE decryption, cached session keys and automatic plaintext fallback. It is off
+by default; plaintext signed requests are still accepted by the gateway. 1.1.2 aligned the
+risk-control headers with CodeArts CLI 26.11.21: the signed `client-ip` header is added and
+`model-name` is percent-encoded (non-ASCII names such as 智速模式 would otherwise be
+rejected by fetch). Compatibility fixes in 1.1.1: reasoning-only final answers are promoted
+to `content`, `<|message_end|>` is stripped, a missing `finish_reason` is synthesized, and
 `max_tokens` is capped to the model's declared output limit. ZCode `x-session-id` and
 opencode `prompt_cache_key` are forwarded as `x-ot-session-id` / `user-session-id`, so
 model switches in one conversation reuse the same upstream CodeArts session.

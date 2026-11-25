@@ -119,10 +119,30 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
   `encodeURIComponent`（中文模型名直接发送会被 fetch 拒绝）。
 - 客户端未提供会话 ID 时使用进程级兜底 `ses_...`，避免出现无会话的裸签名请求。
 - 这些头全部通过 `extraHeaders` 进入 SDK-HMAC-SHA256 的签名范围。
-- 不发送 `X-Encrypt-Capable` / SM4 头，因为代理没有实现 CLI 的响应解密链路。
-- CLI 26.11.21 对 `/api/v2/chat/completions` 默认启用 SM2 密钥交换 + SM4-GCM 请求/响应
-  加密（`fallbackOnFailure: true`，失败回退明文）。代理保持签名明文；实测上游仍接受明文
-  并正常返回。若网关未来强制加密，代理需要补充国密实现（Node WebCrypto 不提供 SM2/SM4）。
+- 明文模式下不发送 `X-Encrypt-Capable` / SM4 头；只在实际启用传输加密时发送
+  `x-encrypt-*`（见下节），且加密请求的签名只覆盖基础头，与 CLI 一致。
+
+### 传输加密（可选，1.2.0）
+
+`CODEARTS_TRANSPORT_ENCRYPT=1` 时，`forwardChat` 走 `src/transport-security.ts`：
+
+1. **密钥交换**：`POST /api/v1/security/key-exchange`，请求
+   `{clientPublicKey, sessionId, timestamp}`，用 AK/SK 签名。CLI 的“SM2”实际是
+   **ECDH P-256**；共享密钥经 SHA-256 后取前 16 字节作 SM4 key，`keyId` 由服务端返回。
+2. **请求加密**：SM4-GCM，AAD = `${METHOD}|${pathname}|${timestamp}`；密文经 **base64**
+   作为请求体（直接发二进制会被拒为 `ENCRYPT_DECRYPT_FAILED`），头为
+   `x-encrypt-algo: sm4-gcm`、`x-encrypt-key-id`、`x-encrypt-iv`、`x-encrypt-tag`、
+   `x-encrypt-ts`，`Content-Type: application/octet-stream`。加密后**用密文重新签名**，
+   签名头只含基础头（`content-type`/`host`/`x-sdk-*`/`authorization`）。
+3. **响应解密**：`X-Encrypt-Algo: sm4-gcm` 时按 SSE 帧解密，帧格式
+   `base64(iv):base64(tag):base64(ciphertext)`，AAD = `keyId|帧序号`；解密后重新以
+   `\n\n` 分帧交给现有 SSE 处理逻辑。
+4. **回退**：密钥协商失败、加密请求网络错误、400/404/405/415 或
+   `ENCRYPT_KEY_EXPIRED` → 清缓存并回退明文重试，不影响可用性。密钥缓存到到期前
+   5 分钟；相同密文重复发送会触发 `ENCRYPT_REPLAY_DETECTED`，因此每次请求都生成新
+   iv/timestamp。
+5. **依赖**：Node/OpenSSL 不含 SM4，使用 `sm-crypto-v2`（纯 JS，API 与 CLI 一致）。
+   Anthropic 路径暂保持明文。
 
 ## 五、本地代理
 
@@ -281,6 +301,7 @@ src/
 ├── login-cli.ts          npm run login
 ├── gate.ts               并发闸门（上限 + 有界队列 + 冷却）
 ├── signing.ts            SDK-HMAC-SHA256（WebCrypto）
+├── transport-security.ts 可选 SM4-GCM 传输加密（P-256 交换、请求加密、SSE 解密）
 ├── normalize.ts          OpenAI 请求体归一化
 ├── vision-routing.ts     文本模型遇图回落
 ├── anthropic-transform.ts Anthropic ↔ OpenAI 请求/响应/流转换
@@ -292,7 +313,7 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（108 项）
+└── *.test.ts             vitest（116 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
@@ -319,7 +340,7 @@ scripts/
 | 用量 | magpie hook | `GET /usage` |
 | 守护/自启脚本 | systemd/launchd/Windows | systemd/launchd/Windows |
 | 凭据存储 | jwt.json | AK/SK 不落盘；可选 web 登录 `web-auth.json`（0600） |
-| 依赖 | undici（代理环境） | 无运行时依赖（WebCrypto + 全局 fetch） |
+| 依赖 | undici（代理环境） | `sm-crypto-v2`（SM4-GCM）+ WebCrypto + 全局 fetch |
 
 **有意保留的差异**
 
@@ -329,7 +350,7 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，108 项）：
+`npm test`（vitest，116 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。
@@ -339,6 +360,8 @@ scripts/
 - 归一化：developer role、max_completion_tokens、tool_choice、reasoning_effort。
 - 视觉回落：新图改路由、历史图剥离、视觉/未知模型不处理。
 - Anthropic：请求/响应转换、thinking、tool calls、流式事件、紧凑 `data:` 解析。
+- 传输加密：开关解析、key 有效期、SM4-GCM 请求往返（AAD/iv/tag）、P-256 协商派生、
+  加密 SSE 逐帧解密；代理侧覆盖加密请求 + 加密响应 + 明文回退。
 - 代理：`/status`、缺少凭据 401、web 登录状态/logout、签名转发、SSE 透传、实时模型、
   `/models/<id>`、用量、并发串行化、队列满 429、`TM.00001041` → 429、上下文超长提示、
   视觉回落、Anthropic。

@@ -13,13 +13,15 @@
 - **所有请求直连华为云**，不使用系统代理或第三方转发。
 - opencode 自己的后台 service 与本代理是两件事：可以独立停用 opencode daemon，同时保留本代理的 systemd 服务。
 
-当前版本：`1.1.2`。最近一次发布：`v1.1.2`。
+当前版本：`1.2.0`。最近一次发布：`v1.2.0`。
 
 ## 2. 技术栈与硬约束
 
 - Node.js ≥ 20，TypeScript，Vitest。
 - `src/` 经 `tsc` 构建到 `dist/`；`dist/`、`scripts/`、`package-lock.json` 需要提交，直接 GitHub 安装依赖这些产物。
 - 运行时代码只使用 Node/Bun 内置 `fetch`、WebCrypto 等能力，不随意增加运行时依赖。
+  唯一例外：`sm-crypto-v2`（纯 JS SM4-GCM，Node/OpenSSL 不提供 SM4），仅在
+  `CODEARTS_TRANSPORT_ENCRYPT=1` 的加密路径使用。
 - TypeScript 不使用 `any`；外部 JSON 用 `unknown` 和类型收窄处理。
 - 异步 I/O 必须有错误反馈，不静默吞错；日志不得输出 AK/SK、Cookie、refresh token、Authorization 等敏感值。
 - 不读取系统代理；检测到 `HTTP(S)_PROXY` 时固定 `NO_PROXY=*`。
@@ -34,6 +36,7 @@
 | `src/anthropic-transform.ts` | Anthropic ↔ OpenAI 请求、响应、流式转换 |
 | `src/gate.ts` | 并发上限、有界队列、冷却和取消 |
 | `src/signing.ts` | SDK-HMAC-SHA256 签名，额外请求头也参与签名 |
+| `src/transport-security.ts` | 可选 SM4-GCM 传输加密：P-256 密钥交换、请求加密、SSE 逐帧解密、明文回退 |
 | `src/credentials.ts` | 凭据解析顺序和掩码 |
 | `src/config.ts` | 端点、端口、模型目录接口、默认参数、日志 |
 | `src/builtin-models.ts` | 12 个内置模型的完整静态快照 |
@@ -51,7 +54,7 @@
 ```bash
 npm install
 npm run typecheck     # tsc --noEmit
-npm test              # Vitest，当前 108 项
+npm test              # Vitest，当前 116 项
 npm run build         # 更新 dist/
 npm run start:proxy   # 直接启动代理
 npm start             # 可选 supervisor
@@ -92,6 +95,7 @@ npm run login
 | `CODEARTS_QUEUE_COOLDOWN_SEC` | `1` | 排队冷却秒数 |
 | `CODEARTS_ANTHROPIC_MODEL` | `glm-5.3-flash` | Anthropic 模型映射 |
 | `CODEARTS_VISION_MODEL` | `glm-5.3-flash` | 视觉回落模型 |
+| `CODEARTS_TRANSPORT_ENCRYPT` | — | `1` 开启 SM4-GCM 传输加密（默认明文，失败回退） |
 | `CODEARTS_LOG_LEVEL` | `info` | `debug` 查看详细日志 |
 
 ## 6. 本地 API 表面
@@ -120,6 +124,8 @@ npm run login
    - opencode 没有合适请求头时，使用请求体 `prompt_cache_key`；
    - 最终映射为上游 `x-ot-session-id` 和 `user-session-id`，并通过 `extraHeaders` 纳入签名。
 9. 进入并发闸门，再签名并直连上游。
+   - `CODEARTS_TRANSPORT_ENCRYPT=1` 时先协商 P-256 会话密钥，SM4-GCM 加密请求体
+     （base64 文本），用密文重新签名且只签基础头；失败自动回退明文。
 10. 补齐 CodeArts CLI 风控/追踪头：`x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`、
     `x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity`、
     `x-ot-function: agent-tui`、`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.21`、
@@ -215,7 +221,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 ## 13. 测试与实测要求
 
-当前为 **108 项 Vitest 测试，12 个测试文件**。
+当前为 **116 项 Vitest 测试，13 个测试文件**。
 
 除单元测试外，涉及客户端兼容时至少做以下实测：
 
@@ -234,9 +240,11 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - 行为变化同步更新 `README.md` 和 `DESIGN.md`，测试数量保持准确。
 - 常规发布流程：文档 → typecheck/test/build → commit → annotated tag → push main/tag → GitHub release。
 - 重发同一版本只在用户明确要求时进行；不要擅自 force push 或移动 tag。
-- 当前 `v1.1.2` 对齐 CodeArts CLI 26.11.21：客户端版本 `26.11.21`、新增签名 `client-ip`、
-  `model-name` 百分号编码、模型目录 `Agent-Type: PromptCenter` 回归测试。1.1.1 为 `/usage`
-  剩余额度版本；1.1.0 已包含 reasoning、finish、token、session 和 CLI 风控头修复。
+- 当前 `v1.2.0` 新增可选 SM4-GCM 传输加密（`CODEARTS_TRANSPORT_ENCRYPT=1`，默认关闭）：
+  P-256 密钥交换、base64 密文请求 + 重新签名、SSE 逐帧解密、明文自动回退。1.1.2 对齐
+  CLI 26.11.21（版本头、`client-ip`、`model-name` 编码、`Agent-Type: PromptCenter`）；
+  1.1.1 为 `/usage` 剩余额度版本；1.1.0 已包含 reasoning、finish、token、session 与
+  CLI 风控头修复。
 - 修改仓库 Description/Topics 使用 `gh repo edit`，也属于外部写入，需用户明确要求。
 
 ## 15. 已知坑速查
@@ -244,6 +252,10 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 | 现象 | 优先检查 |
 | --- | --- |
 | 思考区有回复、正文为空 | reasoning-only 回填是否生效，原始 SSE 是否含 `<|message_end|>` |
+| `ENCRYPT_DECRYPT_FAILED` | 加密请求体必须是 base64 文本，不能发原始二进制 |
+| `ENCRYPT_REPLAY_DETECTED` | 同一 keyId + 密文被重复发送；每请求要新 iv/timestamp |
+| 加密响应解密失败 | 帧顺序是 `base64(iv):base64(tag):base64(ciphertext)`，AAD 为 `keyId|帧序号` |
+| 加密后签名 400 | 加密请求只签基础头（content-type/host/x-sdk-*/authorization），x-ot-* 不参与 |
 | 两个 JSON 拼接解析失败 | 补出的 SSE 块是否以 `\n\n` 分隔 |
 | opencode 重试十次 | 上游是否漏发 `finish_reason` |
 | 切 3 次模型后 429 | 是否转发 `x-session-id` 或 `prompt_cache_key` |
@@ -258,7 +270,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 ## 16. 完成定义（DoD）
 
-- 回归测试覆盖问题，108 项或更新后的全部测试通过。
+- 回归测试覆盖问题，116 项或更新后的全部测试通过。
 - typecheck/build 通过，`dist/` 同步。
 - 文档、测试计数、故障排查说明同步。
 - 服务已重启并完成必要的真实请求验证。

@@ -1,8 +1,10 @@
 import fs from "node:fs"
 import http from "node:http"
+import { createECDH, createHash } from "node:crypto"
 import type { AddressInfo } from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { sm4 } from "sm-crypto-v2"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { MODEL_BUILTIN_URL, STATISTICS_URL } from "./config.js"
 import type { Fetcher } from "./http.js"
@@ -249,6 +251,139 @@ describe("CodeArtsProxy", () => {
     expect(response.status).toBe(200)
     expect(captured[0].headers["model-id"]).toBe("speed")
     expect(captured[0].headers["model-name"]).toBe(encodeURIComponent("智速模式"))
+  })
+
+  it("encrypts chat traffic and decrypts SSE when transport encryption is enabled", async () => {
+    const keyId = "transport-key-1"
+    const serverEcdh = createECDH("prime256v1")
+    const serverPublicKey = serverEcdh.generateKeys().toString("base64")
+    let sessionKey: Uint8Array | null = null
+    let plainRequest: Record<string, unknown> | null = null
+    const captured: Array<{ headers: http.IncomingHttpHeaders }> = []
+
+    const frame = (plain: string, index: number): string => {
+      const iv = Buffer.from(createHash("sha256").update(`iv${index}`).digest().subarray(0, 12))
+      const aad = new TextEncoder().encode(`${keyId}|${index}`)
+      const result = sm4.encrypt(new TextEncoder().encode(plain), sessionKey!, {
+        mode: "gcm",
+        output: "array",
+        iv,
+        associatedData: aad,
+      })
+      return [
+        iv.toString("base64"),
+        Buffer.from(result.tag).toString("base64"),
+        Buffer.from(result.output).toString("base64"),
+      ].join(":")
+    }
+
+    const upstream = http.createServer(async (req, res) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(Buffer.from(chunk))
+      const body = Buffer.concat(chunks)
+      if (req.url === "/api/v1/security/key-exchange") {
+        const payload = JSON.parse(body.toString("utf8")) as { clientPublicKey: string }
+        const shared = serverEcdh.computeSecret(Buffer.from(payload.clientPublicKey, "base64"))
+        sessionKey = new Uint8Array(createHash("sha256").update(shared).digest()).slice(0, 16)
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({ serverPublicKey, keyId, expiresIn: 600 }))
+        return
+      }
+      captured.push({ headers: req.headers })
+      const iv = Buffer.from(String(req.headers["x-encrypt-iv"]), "base64")
+      const tag = new Uint8Array(Buffer.from(String(req.headers["x-encrypt-tag"]), "base64"))
+      const aad = new TextEncoder().encode(
+        `POST|/api/v2/chat/completions|${String(req.headers["x-encrypt-ts"])}`,
+      )
+      const plain = sm4.decrypt(
+        new Uint8Array(Buffer.from(body.toString("utf8"), "base64")),
+        sessionKey!,
+        {
+          mode: "gcm",
+          output: "array",
+          iv,
+          associatedData: aad,
+          tag,
+        },
+      )
+      plainRequest = JSON.parse(Buffer.from(plain).toString("utf8")) as Record<string, unknown>
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "x-encrypt-algo": "sm4-gcm",
+        "x-encrypt-key-id": keyId,
+      })
+      res.end(
+        `${frame('data: {"id":"mock","choices":[{"index":0,"delta":{"content":"OK"}}]}', 0)}\n\n` +
+          `${frame('data: {"id":"mock","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}', 1)}\n\n` +
+          `${frame("data: [DONE]", 2)}\n\n`,
+      )
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: { ...ENV, CODEARTS_TRANSPORT_ENCRYPT: "1" },
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "glm-5.3-flash",
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-encrypt-algo")).toBeNull()
+    const text = await response.text()
+    expect(text).toContain('"content":"OK"')
+    expect(text).toContain("data: [DONE]")
+    expect(captured).toHaveLength(1)
+    expect(captured[0].headers["x-encrypt-algo"]).toBe("sm4-gcm")
+    expect(captured[0].headers["x-encrypt-key-id"]).toBe(keyId)
+    expect(captured[0].headers["x-ot-client-version"]).toBe("26.11.21")
+    expect(captured[0].headers.authorization).toMatch(/^SDK-HMAC-SHA256 Access=AKIDEXAMPLE,/)
+    expect(plainRequest).toMatchObject({ model: "glm-5.3-flash", stream: true })
+  })
+
+  it("falls back to plaintext when key exchange fails", async () => {
+    const captured: Array<{ headers: http.IncomingHttpHeaders }> = []
+    const upstream = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain */
+      }
+      if (req.url === "/api/v1/security/key-exchange") {
+        res.writeHead(500, { "content-type": "application/json" })
+        res.end('{"error":"boom"}')
+        return
+      }
+      captured.push({ headers: req.headers })
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ id: "mock", object: "chat.completion", choices: [] }))
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: { ...ENV, CODEARTS_TRANSPORT_ENCRYPT: "1" },
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "glm-5.3-flash",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(captured).toHaveLength(1)
+    expect(captured[0].headers["x-encrypt-algo"]).toBeUndefined()
+    expect(captured[0].headers["x-session-affinity"]).toBeTruthy()
   })
 
   it("uses prompt_cache_key as the upstream session when no header is present", async () => {

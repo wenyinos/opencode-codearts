@@ -31,6 +31,8 @@ export declare class CodeArtsProxy {
     private readonly env;
     private readonly gate;
     private server;
+    /** SM4-GCM session key, only used when CODEARTS_TRANSPORT_ENCRYPT is on. */
+    private transportKey;
     constructor(options?: CodeArtsProxyOptions);
     start(): Promise<void>;
     stop(): Promise<void>;
@@ -42,6 +44,11 @@ export declare class CodeArtsProxy {
     private modelRecord;
     private modelInfo;
     private usage;
+    /**
+     * Cached SM4-GCM session key. Returns null (and logs) when negotiation fails
+     * so callers silently fall back to a signed plaintext request.
+     */
+    private transportKeyFor;
     private forwardChat;
     /** Pick the CodeArts model for an Anthropic request. */
     private anthropicModel;

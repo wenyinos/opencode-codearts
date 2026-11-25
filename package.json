@@ -1,6 +1,6 @@
 {
   "name": "opencode-codearts",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "OpenCode provider plugin for Huawei Cloud CodeArts (码道) models, authenticated with CODEARTS_CLI_AK / CODEARTS_CLI_SK environment variables.",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,8 @@
     "clean": "node -e \"import('fs').then(f=>f.rmSync('dist',{recursive:true,force:true}))\""
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.17.6"
+    "@opencode-ai/plugin": "^1.17.6",
+    "sm-crypto-v2": "^2.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
