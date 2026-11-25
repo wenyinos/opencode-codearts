@@ -106,6 +106,10 @@ describe("model catalogue", () => {
     expect(models).toHaveLength(2)
     expect(seen[0].get("authorization")).toMatch(/^SDK-HMAC-SHA256 Access=AKID,/)
     expect(seen[0].get("x-sdk-date")).toBeTruthy()
+    // CLI 26.11.21 rejects the builtin-model request without Agent-Type
+    // (TM.00001001), so both headers must stay in the signed request.
+    expect(seen[0].get("agent-type")).toBe("PromptCenter")
+    expect(seen[0].get("x-language")).toBe("zh-cn")
   })
 
   it("converts remote models into opencode's provider shape", () => {

@@ -13,7 +13,7 @@
 - **所有请求直连华为云**，不使用系统代理或第三方转发。
 - opencode 自己的后台 service 与本代理是两件事：可以独立停用 opencode daemon，同时保留本代理的 systemd 服务。
 
-当前版本：`1.1.1`。最近一次发布：`v1.1.1`。
+当前版本：`1.1.2`。最近一次发布：`v1.1.2`。
 
 ## 2. 技术栈与硬约束
 
@@ -51,7 +51,7 @@
 ```bash
 npm install
 npm run typecheck     # tsc --noEmit
-npm test              # Vitest，当前 107 项
+npm test              # Vitest，当前 108 项
 npm run build         # 更新 dist/
 npm run start:proxy   # 直接启动代理
 npm start             # 可选 supervisor
@@ -122,9 +122,10 @@ npm run login
 9. 进入并发闸门，再签名并直连上游。
 10. 补齐 CodeArts CLI 风控/追踪头：`x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`、
     `x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity`、
-    `x-ot-function: agent-tui`、`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.11`、
-    `plugin-name/version`、`ide-name/version`、`x-language`、`x-remote-origin-url`、
-    `user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`。
+    `x-ot-function: agent-tui`、`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.21`、
+    `plugin-name/version`、`ide-name/version`、`x-language`、`x-remote-origin-url`、`client-ip`、
+    `user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`（非 ASCII 名做
+    百分号编码，和 CLI 一致）。
     这些头必须参与签名；客户端没有 session 时使用进程级兜底 session。
 
 ## 8. 响应与 SSE 规则（高风险区域）
@@ -174,6 +175,8 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 - 内置 12 个模型，保留全部上游字段，包括 `model_desc`、`model_category`、`model_sku`、`provider`、`channel_source`、`credit`、`time_slots`、`intervals` 等。
 - 优先实时 `/v1/model/builtin`，失败时使用静态目录和快照。
+- 实时请求必须带签名头 `Agent-Type: PromptCenter` 和 `X-Language: zh-cn`，否则上游返回
+  `TM.00001001 请求头Agent-Type为空`（26.11.21 起实测）。
 - 快照位置：`~/.config/opencode/opencode-codearts/models.json`。
 - `ModelInfo.upstream` 不得丢弃原始字段；`limit.output` 同时用于 token 截断。
 
@@ -212,7 +215,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 ## 13. 测试与实测要求
 
-当前为 **107 项 Vitest 测试，12 个测试文件**。
+当前为 **108 项 Vitest 测试，12 个测试文件**。
 
 除单元测试外，涉及客户端兼容时至少做以下实测：
 
@@ -231,7 +234,9 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - 行为变化同步更新 `README.md` 和 `DESIGN.md`，测试数量保持准确。
 - 常规发布流程：文档 → typecheck/test/build → commit → annotated tag → push main/tag → GitHub release。
 - 重发同一版本只在用户明确要求时进行；不要擅自 force push 或移动 tag。
-- 当前 `v1.1.1` 为 `/usage` 剩余额度版本；1.1.0 已包含 reasoning、finish、token、session 和 CLI 风控头修复。
+- 当前 `v1.1.2` 对齐 CodeArts CLI 26.11.21：客户端版本 `26.11.21`、新增签名 `client-ip`、
+  `model-name` 百分号编码、模型目录 `Agent-Type: PromptCenter` 回归测试。1.1.1 为 `/usage`
+  剩余额度版本；1.1.0 已包含 reasoning、finish、token、session 和 CLI 风控头修复。
 - 修改仓库 Description/Topics 使用 `gh repo edit`，也属于外部写入，需用户明确要求。
 
 ## 15. 已知坑速查
@@ -247,10 +252,13 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 | opencode 自动标题为空 | 已知轻微问题，不影响主对话和工具链 |
 | 华为 TLS/连接异常 | 检查残留系统/KDE 代理，项目要求直连 |
 | Anthropic 流解析失败 | 检查紧凑 `data:` 和 Anthropic 转换层，不要只改 OpenAI 路径 |
+| `TM.00001001`（模型目录 400） | 签名请求是否带 `Agent-Type: PromptCenter` 和 `X-Language` |
+| `ModelArts.81101/81114`（`speed`） | 上游共享配额限流（4/s、100/min），CLI 同样触发；不是代理问题 |
+| fetch 报 `Invalid character in header` | `model-name` 是否对中文模型名做了百分号编码 |
 
 ## 16. 完成定义（DoD）
 
-- 回归测试覆盖问题，107 项或更新后的全部测试通过。
+- 回归测试覆盖问题，108 项或更新后的全部测试通过。
 - typecheck/build 通过，`dist/` 同步。
 - 文档、测试计数、故障排查说明同步。
 - 服务已重启并完成必要的真实请求验证。

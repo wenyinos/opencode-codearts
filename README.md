@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-107%20passing-success)
+![tests](https://img.shields.io/badge/tests-108%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -312,14 +312,16 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 
 ### 风控与追踪头
 
-代理按 CodeArts CLI 26.11.11 的实际请求补齐并签名以下头，避免上游把代理请求视为匿名客户端：
+代理按 CodeArts CLI 26.11.21 的实际请求补齐并签名以下头，避免上游把代理请求视为匿名客户端：
 
 - 追踪：`x-ot-trace-id`、`x-ot-span-id`、`x-snap-traceid`
 - 会话：`x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity`
-- 客户端：`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.11`、`x-ot-function: agent-tui`
+- 客户端：`x-ot-client-type: CLI`、`x-ot-client-version: 26.11.21`、`x-ot-function: agent-tui`、`client-ip`
 - 插件/IDE：`plugin-name`、`plugin-version`、`ide-name`、`ide-version`
 - 请求：`user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`、
   `x-language: zh-cn`、`x-remote-origin-url`
+
+`model-name` 与 CLI 一致做百分号编码（`智速模式` → `%E6%99%BA...`），否则 fetch 会因非 ASCII 头值拒绝请求。
 
 没有客户端会话 ID 时，代理使用进程级兜底 session，而不是发一个无会话的裸请求。
 
@@ -348,6 +350,7 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 | `429 codearts_concurrency_limit` | 账号的 3 个会话被其他客户端占用；确认客户端带 `x-session-id` / `prompt_cache_key` 以复用会话；仍 429 时关闭其他会话后重试 |
 | `opencode` 报 `stream ended without finish_reason` | 1.1.1已在上游缺 finish 时补 `stop` / `tool_calls`；更新代理并重启 |
 | `InferHub.001001005.400` | `max_tokens` 超出模型输出上限；1.1.1会按模型 `limit.output` 自动截断 |
+| `ModelArts.81101` / `81114`（`speed` 模型） | 智速模式为上游共享配额（常见 4 次/秒、100 次/分），CLI 同样会触发；稍后重试或改用具体模型 |
 | `400 codearts_context_limit` | 提示词超过模型上下文，缩短后重试 |
 | 端口 17228 被占用 | 若占用者也是本代理会直接复用；否则用 `CODEARTS_PROXY_PORT` 换端口 |
 | 模型列表为空 | 先 `curl 127.0.0.1:17228/models`；无实时列表时用静态 12 个模型兜底 |
@@ -360,9 +363,17 @@ CodeArts 每个账号**最多 3 个并发会话**，第 4 个会被上游直接�
 - 用量是尽力而为：读取 `snap-manager/v1/statistics/plugin`，通过 `GET /usage` 查看（含剩余额度）。
 - 运行时代码只依赖 Node/Bun 内置的 `fetch` 与 WebCrypto；`@opencode-ai/plugin` 仅提供类型。
 - 插件层不是必需的；独立代理 + `print-provider` 即可完成全部功能。
+- CLI 26.11.21 起对 `/api/v2/chat/completions` 默认启用 SM2/SM4-GCM 传输加密
+  （`X-Encrypt-Capable: sm4-gcm`，失败自动回退明文）。代理保持签名明文请求；实测上游
+  仍接受明文并正常返回（`/models`、`/usage`、OpenAI 与 Anthropic 对话均通过）。若未来
+  上游强制加密，需要为代理补充国密实现。
 
 ## 版本记录
 
+- **1.1.2**：对齐 CodeArts CLI 26.11.21 协议：客户端版本升级到 `26.11.21`，新增签名的
+  `client-ip` 头，`model-name` 按 CLI 规则做百分号编码（修复中文模型名），并补充模型目录
+  `Agent-Type: PromptCenter` 回归测试。文档记录 CLI 的 SM2/SM4 传输加密现状与 `speed`
+  模型上游限流。测试更新至 108 项。
 - **1.1.1**：`GET /usage` 新增 `remaining` / `display_remaining` 剩余额度字段（保留 `display` 兼容）；文档与测试更新至 107 项。
 - **1.1.0**：reasoning-only 回填、`<|message_end|>` 清理、缺失 `finish_reason` 补全、`max_tokens` 截断、会话复用、CodeArts CLI 风控头对齐；签到功能已移除。
 
@@ -377,7 +388,11 @@ Anthropic (`/anthropic/v1/messages`) APIs on `127.0.0.1:17228` (override with
 and pins `NO_PROXY=*` when a proxy environment is present.
 
 `GET /usage` now includes `remaining` and `display_remaining` for each credit bucket.
-Compatibility fixes in 1.1.1: reasoning-only final answers are promoted to
+1.1.2 aligns the risk-control headers with CodeArts CLI 26.11.21: the signed
+`client-ip` header is added and `model-name` is percent-encoded (non-ASCII names such as
+智速模式 would otherwise be rejected by fetch). The CLI now encrypts chat traffic with
+SM2/SM4-GCM by default; the proxy keeps signed plaintext requests, which the gateway
+still accepts. Compatibility fixes in 1.1.1: reasoning-only final answers are promoted to
 `content`, `<|message_end|>` is stripped, a missing `finish_reason` is synthesized, and
 `max_tokens` is capped to the model's declared output limit. ZCode `x-session-id` and
 opencode `prompt_cache_key` are forwarded as `x-ot-session-id` / `user-session-id`, so

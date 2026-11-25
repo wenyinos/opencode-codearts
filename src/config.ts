@@ -25,9 +25,9 @@ export const PLUGIN_VERSION =
 export const PROVIDER_ID = "codearts"
 
 // Mirror the CodeArts CLI's risk-control/telemetry headers. Values observed
-// from `codearts run --print-logs --log-level DEBUG` on CLI 26.11.11.
+// from `codearts run --print-logs --log-level DEBUG` on CLI 26.11.21.
 export const CODEARTS_CLIENT_TYPE = "CLI"
-export const CODEARTS_CLIENT_VERSION = "26.11.11"
+export const CODEARTS_CLIENT_VERSION = "26.11.21"
 export const CODEARTS_CLIENT_FUNCTION = "agent-tui"
 export const CODEARTS_ORIGIN_URL = "https://github.com/wenyinos/opencode-codearts"
 

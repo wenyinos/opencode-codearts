@@ -18,6 +18,7 @@
 
 import http from "node:http"
 import { randomBytes, randomUUID } from "node:crypto"
+import os from "node:os"
 import {
   ANTHROPIC_MODEL_ENV,
   CATALOG,
@@ -179,6 +180,26 @@ function clientSessionId(req: http.IncomingMessage): string {
 
 const FALLBACK_SESSION_ID = `ses_${randomUUID().replace(/-/g, "").slice(0, 24)}`
 
+/** First non-internal IPv4 address, matching the CLI's client-ip header. */
+function localIpv4(): string {
+  const interfaces = os.networkInterfaces()
+  for (const name of Object.keys(interfaces)) {
+    for (const address of interfaces[name] ?? []) {
+      if (address.family === "IPv4" && !address.internal) return address.address
+    }
+  }
+  return "127.0.0.1"
+}
+
+/**
+ * The CLI percent-encodes model-name unless it is already encoded. Non-ASCII
+ * names such as 智速模式 are rejected by fetch when sent raw.
+ */
+function encodeModelName(name: string): string {
+  if (!name || /%[0-9A-Fa-f]{2}/.test(name)) return name
+  return encodeURIComponent(name)
+}
+
 /**
  * Headers emitted by the CodeArts CLI for tracing and risk control. Mirroring
  * them keeps proxy traffic looking like the official client instead of an
@@ -207,11 +228,12 @@ function codeartsClientHeaders(sessionId: string, model: string): Record<string,
     "ide-version": "",
     "x-language": "zh-cn",
     "x-remote-origin-url": CODEARTS_ORIGIN_URL,
+    "client-ip": localIpv4(),
     "user-msg-id": messageId,
     "x-message-id": messageId,
     "created-time": createdAt,
     "model-id": model,
-    "model-name": modelName,
+    "model-name": encodeModelName(modelName),
   }
 }
 

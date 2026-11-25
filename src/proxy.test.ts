@@ -199,8 +199,9 @@ describe("CodeArtsProxy", () => {
     expect(captured[0].headers["user-session-id"]).toBe("sess_test_123")
     expect(captured[0].headers["x-session-affinity"]).toBe("sess_test_123")
     expect(captured[0].headers["x-ot-client-type"]).toBe("CLI")
-    expect(captured[0].headers["x-ot-client-version"]).toBe("26.11.11")
+    expect(captured[0].headers["x-ot-client-version"]).toBe("26.11.21")
     expect(captured[0].headers["x-ot-function"]).toBe("agent-tui")
+    expect(captured[0].headers["client-ip"]).toMatch(/^\d{1,3}(\.\d{1,3}){3}$/)
     expect(captured[0].headers["x-ot-trace-id"]).toMatch(/^[0-9a-f]{32}$/)
     expect(captured[0].headers["x-ot-span-id"]).toMatch(/^[0-9a-f]{16}$/)
     expect(captured[0].headers["x-snap-traceid"]).toMatch(/^[0-9a-f]{32}_[0-9a-f]{16}$/)
@@ -216,6 +217,38 @@ describe("CodeArtsProxy", () => {
     expect(forwarded.max_completion_tokens).toBeUndefined()
     expect(forwarded.max_tokens).toBe(65536)
     expect(captured[0].body).toContain("glm-5.3-flash")
+  })
+
+  it("percent-encodes a non-ASCII model name in the model-name header", async () => {
+    const captured: Array<{ headers: http.IncomingHttpHeaders }> = []
+    const upstream = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain */
+      }
+      captured.push({ headers: req.headers })
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ id: "mock", object: "chat.completion", choices: [] }))
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "speed",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(captured[0].headers["model-id"]).toBe("speed")
+    expect(captured[0].headers["model-name"]).toBe(encodeURIComponent("智速模式"))
   })
 
   it("uses prompt_cache_key as the upstream session when no header is present", async () => {

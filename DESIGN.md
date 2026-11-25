@@ -103,20 +103,26 @@ Authorization = "SDK-HMAC-SHA256 Access=<AK>,SignedHeaders=<...>,Signature=<...>
 
 ### 风控与追踪头
 
-`codearts run --print-logs --log-level DEBUG` 实测 CLI 26.11.11 会发送并签名以下头；代理逐一补齐：
+`codearts run --print-logs --log-level DEBUG` 实测 CLI 26.11.21 会发送并签名以下头；代理逐一补齐：
 
 | 类别 | 头 |
 | --- | --- |
 | 追踪 | `x-ot-trace-id`（32 hex）、`x-ot-span-id`（16 hex）、`x-snap-traceid`（`<trace>_<span>`） |
 | 会话 | `x-ot-session-id`、`x-ot-parent-session-id`、`user-session-id`、`x-session-affinity` |
-| 客户端 | `x-ot-client-type: CLI`、`x-ot-client-version: 26.11.11`、`x-ot-function: agent-tui` |
-| 插件/IDE | `plugin-name: CLI`、`plugin-version: 26.11.11`、`ide-name: CLI`、`ide-version: ""` |
+| 客户端 | `x-ot-client-type: CLI`、`x-ot-client-version: 26.11.21`、`x-ot-function: agent-tui`、`client-ip` |
+| 插件/IDE | `plugin-name: CLI`、`plugin-version: 26.11.21`、`ide-name: CLI`、`ide-version: ""` |
 | 请求 | `user-msg-id`、`x-message-id`、`created-time`、`model-id`、`model-name`、`x-language: zh-cn`、`x-remote-origin-url` |
 
 - 每次请求生成新的 trace/span、message id 和 created-time；`x-snap-traceid` 由二者拼接。
+- `client-ip` 取本机第一个非回环 IPv4，兜底 `127.0.0.1`，与 CLI 的取值逻辑一致。
+- `model-name` 按 CLI 的 `encodeModelName` 规则处理：已含 `%XX` 原样发送，否则
+  `encodeURIComponent`（中文模型名直接发送会被 fetch 拒绝）。
 - 客户端未提供会话 ID 时使用进程级兜底 `ses_...`，避免出现无会话的裸签名请求。
 - 这些头全部通过 `extraHeaders` 进入 SDK-HMAC-SHA256 的签名范围。
 - 不发送 `X-Encrypt-Capable` / SM4 头，因为代理没有实现 CLI 的响应解密链路。
+- CLI 26.11.21 对 `/api/v2/chat/completions` 默认启用 SM2 密钥交换 + SM4-GCM 请求/响应
+  加密（`fallbackOnFailure: true`，失败回退明文）。代理保持签名明文；实测上游仍接受明文
+  并正常返回。若网关未来强制加密，代理需要补充国密实现（Node WebCrypto 不提供 SM2/SM4）。
 
 ## 五、本地代理
 
@@ -286,7 +292,7 @@ src/
 ├── proxy-cli.ts          独立运行代理（npm run start:proxy）
 ├── daemon.ts             supervisor（npm start）
 ├── print-provider.ts     输出 opencode provider 配置
-└── *.test.ts             vitest（107 项）
+└── *.test.ts             vitest（108 项）
 scripts/
 ├── opencode-codearts.service
 ├── com.opencode-codearts.proxy.plist
@@ -323,7 +329,7 @@ scripts/
 
 ## 十二、测试
 
-`npm test`（vitest，107 项）：
+`npm test`（vitest，108 项）：
 
 - 签名：SHA-256/HMAC 已知向量、canonical request 布局、固定时间戳的确定性、security token。
 - 凭据：env 组合、掩码、zsh/bash/fish/sh 的 profile 顺序与 `set -gx` 解析。
