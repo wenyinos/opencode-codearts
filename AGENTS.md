@@ -13,7 +13,7 @@
 - **所有请求直连华为云**，不使用系统代理或第三方转发。
 - opencode 自己的后台 service 与本代理是两件事：可以独立停用 opencode daemon，同时保留本代理的 systemd 服务。
 
-当前版本：`1.2.0`。最近一次发布：`v1.2.0`。
+当前版本：`1.2.1`。最近一次发布：`v1.2.1`。
 
 ## 2. 技术栈与硬约束
 
@@ -54,7 +54,7 @@
 ```bash
 npm install
 npm run typecheck     # tsc --noEmit
-npm test              # Vitest，当前 116 项
+npm test              # Vitest，当前 117 项
 npm run build         # 更新 dist/
 npm run start:proxy   # 直接启动代理
 npm start             # 可选 supervisor
@@ -221,7 +221,7 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 
 ## 13. 测试与实测要求
 
-当前为 **116 项 Vitest 测试，13 个测试文件**。
+当前为 **117 项 Vitest 测试，13 个测试文件**。
 
 除单元测试外，涉及客户端兼容时至少做以下实测：
 
@@ -240,7 +240,9 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 - 行为变化同步更新 `README.md` 和 `DESIGN.md`，测试数量保持准确。
 - 常规发布流程：文档 → typecheck/test/build → commit → annotated tag → push main/tag → GitHub release。
 - 重发同一版本只在用户明确要求时进行；不要擅自 force push 或移动 tag。
-- 当前 `v1.2.0` 新增可选 SM4-GCM 传输加密（`CODEARTS_TRANSPORT_ENCRYPT=1`，默认关闭）：
+- 当前 `v1.2.1` 将上游模型级限流（`ModelArts.81101/81114`）归一化为可重试的
+  `429 codearts_upstream_rate_limit`（带 `Retry-After`）。
+- `v1.2.0` 新增可选 SM4-GCM 传输加密（`CODEARTS_TRANSPORT_ENCRYPT=1`，默认关闭）：
   P-256 密钥交换、base64 密文请求 + 重新签名、SSE 逐帧解密、明文自动回退。1.1.2 对齐
   CLI 26.11.21（版本头、`client-ip`、`model-name` 编码、`Agent-Type: PromptCenter`）；
   1.1.1 为 `/usage` 剩余额度版本；1.1.0 已包含 reasoning、finish、token、session 与
@@ -265,12 +267,12 @@ openpangu 等模型可能把最终回答只写进 `reasoning_content`，`content
 | 华为 TLS/连接异常 | 检查残留系统/KDE 代理，项目要求直连 |
 | Anthropic 流解析失败 | 检查紧凑 `data:` 和 Anthropic 转换层，不要只改 OpenAI 路径 |
 | `TM.00001001`（模型目录 400） | 签名请求是否带 `Agent-Type: PromptCenter` 和 `X-Language` |
-| `ModelArts.81101/81114`（`speed`） | 上游共享配额限流（4/s、100/min），CLI 同样触发；不是代理问题 |
+| `ModelArts.81101/81114`（不限模型） | 上游模型级限流（4/s、100/min、TPM），CLI 同样触发；代理已归一化为 `429 codearts_upstream_rate_limit` + `Retry-After`，不是代理问题 |
 | fetch 报 `Invalid character in header` | `model-name` 是否对中文模型名做了百分号编码 |
 
 ## 16. 完成定义（DoD）
 
-- 回归测试覆盖问题，116 项或更新后的全部测试通过。
+- 回归测试覆盖问题，117 项或更新后的全部测试通过。
 - typecheck/build 通过，`dist/` 同步。
 - 文档、测试计数、故障排查说明同步。
 - 服务已重启并完成必要的真实请求验证。

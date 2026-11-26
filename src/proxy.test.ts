@@ -529,6 +529,41 @@ describe("CodeArtsProxy", () => {
     expect(body.error.code).toBe("codearts_concurrency_limit")
   })
 
+  it("rewrites an upstream model rate limit into a retryable 429", async () => {
+    const upstream = http.createServer(async (req, res) => {
+      for await (const _chunk of req) {
+        /* drain */
+      }
+      res.writeHead(429, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error_code: "ModelArts.81114",
+          error_msg: "Too many requests, the rate limit is 2000000 tokens per minute.",
+        }),
+      )
+    })
+    const upstreamPort = await listen(upstream)
+    closers.push(() => closeServer(upstream))
+
+    const proxy = await startProxy({
+      env: ENV,
+      upstreamBase: `http://127.0.0.1:${upstreamPort}/api/v2`,
+    })
+    const response = await fetch(`${baseOf(proxy)}/api/v2/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "kimi-k3.1-pro", messages: [], stream: false }),
+    })
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("2")
+    const body = (await response.json()) as {
+      error: { code: string; type: string; message: string }
+    }
+    expect(body.error.code).toBe("codearts_upstream_rate_limit")
+    expect(body.error.type).toBe("rate_limit_error")
+    expect(body.error.message).toContain("ModelArts.81114")
+  })
+
   it("serves non-streaming Anthropic Messages requests", async () => {
     const captured: Array<Record<string, unknown>> = []
     const upstream = http.createServer(async (req, res) => {

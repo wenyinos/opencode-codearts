@@ -3,6 +3,8 @@ import { type Fetcher } from "./http.js";
 export declare function isConcurrencyLimit(bodyText: string): boolean;
 /** Is this upstream error a prompt-too-long rejection? */
 export declare function isContextLimit(bodyText: string): boolean;
+/** Is this upstream error a model rate limit rather than a queue/session cap? */
+export declare function isUpstreamRateLimit(bodyText: string): boolean;
 /**
  * Normalize the local API prefix. `/v2` is the documented base (same as
  * opencode-deveco); bare paths and the legacy `/api/v2` / `/v1` prefixes used

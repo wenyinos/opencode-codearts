@@ -112,6 +112,19 @@ export function isContextLimit(bodyText: string): boolean {
   return CONTEXT_LIMIT_PATTERNS.some((pattern) => pattern.test(bodyText))
 }
 
+// Model-level throttling (TPM/RPM) is reported as ModelArts.81101/81114 with
+// "Too many requests". Without rewriting, clients see an opaque provider code
+// with retryable=false instead of a retryable 429.
+const UPSTREAM_RATE_LIMIT_PATTERNS = [
+  /ModelArts\.811(01|14)/,
+  /rate limit is \d/i,
+]
+
+/** Is this upstream error a model rate limit rather than a queue/session cap? */
+export function isUpstreamRateLimit(bodyText: string): boolean {
+  return UPSTREAM_RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(bodyText))
+}
+
 /** A readable hint with the model's declared context window. */
 function contextLimitHint(model: string): string {
   const info = (loadPersistedModels() ?? CATALOG)[model]
@@ -818,6 +831,22 @@ export class CodeArtsProxy {
               message: `${text.slice(0, 500)}\n\n${contextLimitHint(model)}`,
               code: "codearts_context_limit",
               type: "invalid_request_error",
+            },
+          })
+          return
+        }
+        if (isUpstreamRateLimit(text)) {
+          const retryAfter = upstream.headers.get("retry-after")?.trim() || "2"
+          res.setHeader("retry-after", retryAfter)
+          log.warn("upstream model rate limit; returning retryable 429", {
+            status: upstream.status,
+            model,
+          })
+          this.json(res, 429, {
+            error: {
+              message: `CodeArts 上游限流，请稍后重试。${text.slice(0, 300)}`,
+              code: "codearts_upstream_rate_limit",
+              type: "rate_limit_error",
             },
           })
           return

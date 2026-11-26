@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![OpenCode plugin](https://img.shields.io/badge/OpenCode-plugin-blue)](https://opencode.ai)
 ![no magpie](https://img.shields.io/badge/magpie-not%20required-lightgrey)
-![tests](https://img.shields.io/badge/tests-116%20passing-success)
+![tests](https://img.shields.io/badge/tests-117%20passing-success)
 
 把[华为云码道 CodeArts（代码智能体）](https://www.huaweicloud.com/product/codearts.html)
 的模型接入 opencode / Claude Code：
@@ -366,7 +366,7 @@ CLI 26.11.21 对 `/api/v2/chat/completions` 使用 P-256 密钥交换 + SM4-GCM 
 | `429 codearts_concurrency_limit` | 账号的 3 个会话被其他客户端占用；确认客户端带 `x-session-id` / `prompt_cache_key` 以复用会话；仍 429 时关闭其他会话后重试 |
 | `opencode` 报 `stream ended without finish_reason` | 1.1.1已在上游缺 finish 时补 `stop` / `tool_calls`；更新代理并重启 |
 | `InferHub.001001005.400` | `max_tokens` 超出模型输出上限；1.1.1会按模型 `limit.output` 自动截断 |
-| `ModelArts.81101` / `81114`（`speed` 模型） | 智速模式为上游共享配额（常见 4 次/秒、100 次/分），CLI 同样会触发；稍后重试或改用具体模型 |
+| 响应 `429 codearts_upstream_rate_limit` | 上游模型级限流（`ModelArts.81101/81114`，如 4 次/秒、100 次/分、TPM 上限），CLI 同样会触发；代理会归一化为可重试的 429 并带 `Retry-After`，稍后重试即可 |
 | `ENCRYPT_DECRYPT_FAILED` | 加密请求体必须是 base64 文本；检查是否只发了原始二进制 |
 | `ENCRYPT_REPLAY_DETECTED` | 同一 `keyId` + 同一密文被重复发送；每次请求必须生成新 iv/timestamp |
 | `400 codearts_context_limit` | 提示词超过模型上下文，缩短后重试 |
@@ -387,6 +387,8 @@ CLI 26.11.21 对 `/api/v2/chat/completions` 使用 P-256 密钥交换 + SM4-GCM 
 
 ## 版本记录
 
+- **1.2.1**：上游模型级限流（`ModelArts.81101/81114`，如 TPM/RPM）归一化为
+  `429 codearts_upstream_rate_limit` 并带 `Retry-After`，客户端可识别为可重试；测试更新至 117 项。
 - **1.2.0**：新增可选 SM4-GCM 传输加密（`CODEARTS_TRANSPORT_ENCRYPT=1`）：P-256 密钥交换、
   请求 base64 密文 + 重新签名、SSE 逐帧解密、密钥缓存与明文自动回退；新增 `sm-crypto-v2`
   运行时依赖。实测真实上游加密请求与加密响应解密通过。测试更新至 116 项。
